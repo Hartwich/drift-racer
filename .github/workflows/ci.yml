@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout game
+        uses: actions/checkout@v4
+        with:
+          path: game
+
+      - name: Checkout platform
+        uses: actions/checkout@v4
+        with:
+          repository: Hartwich/Open-Party-Lab
+          path: platform
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install platform
+        working-directory: platform
+        run: npm ci
+
+      - name: Build platform packages
+        working-directory: platform
+        run: npm run build:packages
+
+      - name: Install game
+        working-directory: game
+        run: npm install
+
+      - name: Link platform packages
+        run: |
+          mkdir -p game/node_modules/@open-party-lab
+          ln -s "$GITHUB_WORKSPACE/platform/packages/game-core" game/node_modules/@open-party-lab/game-core
+
+      - name: Typecheck
+        working-directory: game
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: game
+        run: npm run build
+
+      - name: Pack dry run
+        working-directory: game
+        run: npm run pack:dry-run
