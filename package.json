@@ -1,6 +1,7 @@
 {
   "name": "@open-party-lab/game-drift-racer",
   "version": "0.1.0",
+  "description": "Arcade drift racing game for Open Party Lab with phone racing controls and shared host action.",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",
@@ -35,7 +36,8 @@
   "files": [
     "dist",
     "README.md",
-    "AGENTS.md"
+    "AGENTS.md",
+    "docs"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
