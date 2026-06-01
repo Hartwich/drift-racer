@@ -6,7 +6,7 @@ Arcade drift racing game for Open Party Lab with phone racing controls and share
 
 ## Status
 
-Alpha. The racing loop is playable. Needs handling tuning, track/content expansion, and more readable race-state feedback.
+Under construction. Drift Racer is currently not playable enough for normal sessions. It needs handling work, track/content expansion, and clearer race-state feedback before it should be recommended.
 
 ## Run Through Open Party Lab
 
