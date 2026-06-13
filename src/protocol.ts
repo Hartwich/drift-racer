@@ -28,12 +28,25 @@ export interface DriftRacerControlState {
   boost: boolean;
 }
 
+/** A jump ramp on the track (take-off rising over `length` to `peak`). */
+export interface DriftRacerRampState {
+  startDistance: number;
+  length: number;
+  peak: number;
+}
+
 export interface DriftRacerRacerState {
   playerId: string;
   name: string;
   color: string;
   x: number;
   y: number;
+  /** Height above the ground plane, in world units (0 = on the road). */
+  z: number;
+  /** Vertical velocity, used for jump animation (pitch). */
+  vz: number;
+  /** True while the car is in the air after a ramp. */
+  airborne: boolean;
   angleRad: number;
   speed: number;
   lap: number;
@@ -54,6 +67,7 @@ export interface DriftRacerState {
   worldHeight: number;
   trackWidth: number;
   trackLength: number;
+  wallHeight: number;
   lapsToWin: number;
   maxRaceMs: number;
   elapsedMs: number;
@@ -62,5 +76,6 @@ export interface DriftRacerState {
   winnerName?: string;
   isTimedOut: boolean;
   track: DriftRacerTrackPoint[];
+  ramps: DriftRacerRampState[];
   racers: DriftRacerRacerState[];
 }

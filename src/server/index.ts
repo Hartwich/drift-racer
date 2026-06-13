@@ -15,10 +15,12 @@ import type {
 } from "../protocol.js";
 import { driftRacerManifest } from "../manifest.js";
 import {
+  driftRacerRamps,
   driftRacerTrack,
   driftRacerTrackConfig,
   projectPointToDriftRacerTrack,
-  sampleDriftRacerTrack
+  sampleDriftRacerTrack,
+  sampleRampHeight
 } from "./driftRacerTrack.js";
 import type {
   DriftRacerRuntimeRacerState,
@@ -40,6 +42,13 @@ const driftSteeringRate = 3.2;
 const driftFuelGainPerSecond = 0.28;
 const boostFuelUsePerSecond = 0.56;
 const boostAcceleration = 920;
+
+// Vertical / track-interaction tuning.
+const gravity = 760; // world units / s^2 (z is in world pixels)
+const jumpFactor = 1.5; // converts ramp slope * speed into launch velocity
+const minJumpSpeed = 240; // below this a car just rolls over the ramp
+const airSteerFactor = 0.35; // reduced steering authority while airborne
+const wallMaxScrub = 0.5; // max fraction of speed lost on a hard wall hit
 
 const neutralControls: DriftRacerControlState = {
   steering: 0,
@@ -94,6 +103,9 @@ function createRacers(context: ServerGameContext): DriftRacerRuntimeRacerState[]
       color: player.color,
       x,
       y,
+      z: 0,
+      vz: 0,
+      airborne: false,
       angleRad: sample.angleRad,
       speed: 0,
       lap: 0,
@@ -122,6 +134,9 @@ function toPublicRacer(racer: DriftRacerRuntimeRacerState): DriftRacerRacerState
     color: racer.color,
     x: racer.x,
     y: racer.y,
+    z: racer.z,
+    vz: racer.vz,
+    airborne: racer.airborne,
     angleRad: racer.angleRad,
     speed: racer.speed,
     lap: racer.lap,
@@ -224,9 +239,16 @@ function simulateRacer(
   const seconds = Math.max(0.001, deltaMs / 1000);
   const controls = connected ? racer.controls : neutralControls;
   const steering = clamp(controls.steering, -1, 1);
-  const driftRequested = controls.drift && Math.abs(steering) > 0.12 && racer.speed > 170;
+  const airborne = racer.airborne;
+  const driftRequested =
+    !airborne && controls.drift && Math.abs(steering) > 0.12 && racer.speed > 170;
   const boostActive = controls.boost && racer.boostFuel > 0.02 && racer.speed > 80;
-  const maxSpeed = racer.offTrack ? maxOffTrackSpeed : boostActive ? maxBoostSpeed : maxForwardSpeed;
+  const effectiveOffTrack = racer.offTrack && !airborne;
+  const maxSpeed = effectiveOffTrack
+    ? maxOffTrackSpeed
+    : boostActive
+      ? maxBoostSpeed
+      : maxForwardSpeed;
   let speed = racer.speed;
 
   if (controls.throttle) {
@@ -237,7 +259,7 @@ function simulateRacer(
     speed += speed > 20 ? -brakeAcceleration * seconds : -reverseAcceleration * seconds;
   }
 
-  speed -= speed * (racer.offTrack ? offTrackDrag : rollingDrag) * seconds;
+  speed -= speed * (effectiveOffTrack ? offTrackDrag : rollingDrag) * seconds;
 
   if (boostActive) {
     speed += boostAcceleration * seconds;
@@ -250,7 +272,7 @@ function simulateRacer(
   speed = clamp(speed, maxReverseSpeed, maxSpeed);
 
   const speedFactor = clamp(Math.abs(speed) / maxForwardSpeed, 0.12, 1.18);
-  const turnRate = driftRequested ? driftSteeringRate : steeringRate;
+  const turnRate = (driftRequested ? driftSteeringRate : steeringRate) * (airborne ? airSteerFactor : 1);
   const directionSign = speed >= 0 ? 1 : -1;
   const angleRad = normalizeAngle(
     racer.angleRad + steering * turnRate * speedFactor * directionSign * seconds
@@ -289,6 +311,61 @@ function simulateRacer(
   };
 }
 
+// Walls (Banden) keep grounded cars inside the corridor; ramps launch them.
+function resolveTrackInteractions(
+  racer: DriftRacerRuntimeRacerState,
+  deltaMs: number
+): DriftRacerRuntimeRacerState {
+  const seconds = Math.max(0.001, deltaMs / 1000);
+  let x = racer.x;
+  let y = racer.y;
+  let z = racer.z;
+  let vz = racer.vz;
+  let airborne = racer.airborne;
+  let speed = racer.speed;
+
+  const projection = projectPointToDriftRacerTrack(x, y);
+  const distance = projection.distance;
+
+  // Banden: clamp grounded cars to the inside of the barriers.
+  if (!airborne) {
+    const maxLateral = driftRacerTrackConfig.trackWidth * 0.5 - driftRacerTrackConfig.carRadius;
+    if (projection.lateralDistance > maxLateral) {
+      const sign = projection.signedLateralDistance >= 0 ? 1 : -1;
+      const over = projection.lateralDistance - maxLateral;
+      x -= projection.normalX * sign * over;
+      y -= projection.normalY * sign * over;
+      const hit = Math.min(1, over / driftRacerTrackConfig.carRadius);
+      speed *= 1 - wallMaxScrub * hit;
+    }
+  }
+
+  // Sprungschanzen: follow the ramp surface, launch at the lip, fall under gravity.
+  if (airborne) {
+    z += vz * seconds;
+    vz -= gravity * seconds;
+    const ground = sampleRampHeight(distance).height;
+    if (z <= ground) {
+      z = ground;
+      vz = 0;
+      airborne = false;
+    }
+  } else {
+    const ramp = sampleRampHeight(distance);
+    const ahead = sampleRampHeight(distance + Math.max(0, speed) * seconds);
+    if (ramp.height > 1 && ahead.height < ramp.height && speed > minJumpSpeed) {
+      z = ramp.height;
+      vz = speed * ramp.slope * jumpFactor;
+      airborne = true;
+    } else {
+      z = ramp.height;
+      vz = 0;
+    }
+  }
+
+  return { ...racer, x, y, z, vz, airborne, speed };
+}
+
 function resolveRacerBumps(racers: DriftRacerRuntimeRacerState[]): DriftRacerRuntimeRacerState[] {
   const nextRacers = racers.map((racer) => ({ ...racer }));
   const minDistance = driftRacerTrackConfig.carRadius * 1.82;
@@ -297,6 +374,10 @@ function resolveRacerBumps(racers: DriftRacerRuntimeRacerState[]): DriftRacerRun
     for (let secondIndex = firstIndex + 1; secondIndex < nextRacers.length; secondIndex += 1) {
       const first = nextRacers[firstIndex];
       const second = nextRacers[secondIndex];
+      // Cars at very different heights (one mid-jump) do not collide.
+      if (Math.abs(first.z - second.z) > driftRacerTrackConfig.carRadius * 1.4) {
+        continue;
+      }
       const dx = second.x - first.x;
       const dy = second.y - first.y;
       const distance = Math.hypot(dx, dy);
@@ -348,6 +429,7 @@ function tickRace(
   );
 
   racers = resolveRacerBumps(racers);
+  racers = racers.map((racer) => resolveTrackInteractions(racer, deltaMs));
 
   let nextFinishOrder = state.nextFinishOrder;
   const elapsedMs = Math.min(state.maxRaceMs, state.elapsedMs + deltaMs);
@@ -382,6 +464,7 @@ function buildPublicState(state: DriftRacerRuntimeState): DriftRacerState {
     worldHeight: state.worldHeight,
     trackWidth: state.trackWidth,
     trackLength: state.trackLength,
+    wallHeight: state.wallHeight,
     lapsToWin: state.lapsToWin,
     maxRaceMs: state.maxRaceMs,
     elapsedMs: state.elapsedMs,
@@ -390,6 +473,7 @@ function buildPublicState(state: DriftRacerRuntimeState): DriftRacerState {
     winnerName: state.winnerName,
     isTimedOut: state.isTimedOut,
     track: state.track,
+    ramps: state.ramps,
     racers: state.racers.map(toPublicRacer)
   };
 }
@@ -420,6 +504,7 @@ export const serverGame: ServerGame<
       worldHeight: driftRacerTrackConfig.worldHeight,
       trackWidth: driftRacerTrackConfig.trackWidth,
       trackLength: driftRacerTrack.length,
+      wallHeight: driftRacerTrackConfig.wallHeight,
       lapsToWin: driftRacerTrackConfig.lapsToWin,
       maxRaceMs: driftRacerTrackConfig.maxRaceMs,
       elapsedMs: 0,
@@ -428,6 +513,7 @@ export const serverGame: ServerGame<
       winnerName: undefined,
       isTimedOut: false,
       track: driftRacerTrack.points,
+      ramps: driftRacerRamps,
       racers: assignRanks(createRacers(context)),
       nextFinishOrder: 1
     };

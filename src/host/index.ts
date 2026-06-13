@@ -1,14 +1,7 @@
 import Phaser from "phaser";
 import { driftRacerManifest } from "../manifest.js";
 import type { DriftRacerState } from "../protocol.js";
-import {
-  drawDriftRacerScene,
-  type DriftRacerHudInstruction
-} from "./DriftRacerRenderer.js";
-
-const hostTheme = {
-  bodyFont: '"Nunito Sans", sans-serif'
-};
+import { DriftRacerRenderer } from "./DriftRacerRenderer.js";
 
 interface HostClientLike {
   subscribe(callback: (state: HostAppStateLike) => void): () => void;
@@ -23,10 +16,14 @@ interface HostAppStateLike {
   } | null;
 }
 
+/**
+ * Thin Phaser host scene. All visuals are produced by the Three.js
+ * {@link DriftRacerRenderer}, which mounts its own WebGL canvas + DOM HUD over
+ * the Phaser surface. The scene only wires up lifecycle and forwards state.
+ */
 export class DriftRacerHostScene extends Phaser.Scene {
   private unsubscribe?: () => void;
-  private graphics?: Phaser.GameObjects.Graphics;
-  private readonly hudTexts = new Map<string, Phaser.GameObjects.Text>();
+  private driftRenderer?: DriftRacerRenderer;
 
   constructor() {
     super(driftRacerManifest.hostView);
@@ -34,75 +31,28 @@ export class DriftRacerHostScene extends Phaser.Scene {
 
   create(): void {
     const client = this.registry.get("hostClient") as HostClientLike;
+    this.cameras.main.setBackgroundColor("#b8cfe0");
 
-    this.cameras.main.setBackgroundColor("#020617");
-    this.graphics = this.add.graphics();
+    const parent = document.getElementById("app");
+    if (!parent) {
+      throw new Error("Host app root missing.");
+    }
+
+    const driftRenderer = new DriftRacerRenderer();
+    driftRenderer.mount(parent);
+    this.driftRenderer = driftRenderer;
 
     this.unsubscribe = client.subscribe((state) => {
       const gameState = (state.game?.state ?? null) as DriftRacerState | null;
-
-      if (!this.graphics) {
-        return;
-      }
-
-      if (!gameState) {
-        this.graphics.clear();
-        this.syncHud([]);
-        return;
-      }
-
-      const hud = drawDriftRacerScene(this, this.graphics, gameState, state.room?.language === "en");
-      this.syncHud(hud);
+      driftRenderer.setState(gameState, state.room?.language === "en");
     });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.unsubscribe?.();
       this.unsubscribe = undefined;
-      this.graphics?.destroy();
-      this.graphics = undefined;
-      for (const text of this.hudTexts.values()) {
-        text.destroy();
-      }
-      this.hudTexts.clear();
+      this.driftRenderer?.dispose();
+      this.driftRenderer = undefined;
     });
-  }
-
-  private syncHud(instructions: DriftRacerHudInstruction[]): void {
-    const activeKeys = new Set(instructions.map((instruction) => instruction.key));
-
-    for (const [key, text] of this.hudTexts) {
-      if (!activeKeys.has(key)) {
-        text.setVisible(false);
-      }
-    }
-
-    for (const instruction of instructions) {
-      let text = this.hudTexts.get(instruction.key);
-
-      if (!text) {
-        text = this.add.text(instruction.x, instruction.y, "", {
-          fontFamily: hostTheme.bodyFont,
-          fontSize: `${instruction.fontSize}px`,
-          color: instruction.color,
-          fontStyle: "900",
-          align: instruction.align ?? "left"
-        });
-        text.setShadow(0, 2, "#020617", 6, true, true);
-        this.hudTexts.set(instruction.key, text);
-      }
-
-      text.setVisible(true);
-      text.setText(instruction.text);
-      text.setPosition(instruction.x, instruction.y);
-      text.setOrigin(instruction.originX ?? 0, instruction.originY ?? 0);
-      text.setStyle({
-        fontFamily: hostTheme.bodyFont,
-        fontSize: `${instruction.fontSize}px`,
-        color: instruction.color,
-        fontStyle: "900",
-        align: instruction.align ?? "left"
-      });
-    }
   }
 }
 

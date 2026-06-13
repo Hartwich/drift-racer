@@ -3,7 +3,7 @@ import type { GameManifest } from "@open-party-lab/game-core";
 export const driftRacerManifest = {
   id: "drift-racer",
   displayName: "Drift Racer",
-  description: "Arcade-Rennen mit Drittperson-Splitscreen, engen Drifts und Boost-Duellen.",
+  description: "3D-Arcade-Racer im RC-Mini-Car-Stil mit cineastischer Flugkamera, engen Drifts und Boost-Duellen.",
   minPlayers: 1,
   maxPlayers: 4,
   hostView: "DriftRacerHostScene",

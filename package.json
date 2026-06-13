@@ -1,7 +1,7 @@
 {
   "name": "@open-party-lab/game-drift-racer",
   "version": "0.1.0",
-  "description": "Arcade drift racing game for Open Party Lab with phone racing controls and shared host action.",
+  "description": "3D arcade RC mini-car racing game for Open Party Lab with phone racing controls and a cinematic flying camera.",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",
@@ -47,7 +47,8 @@
   },
   "peerDependencies": {
     "@open-party-lab/game-core": "0.1.0",
-    "phaser": "^3.90.0"
+    "phaser": "^3.90.0",
+    "three": "^0.184.0"
   },
   "peerDependenciesMeta": {
     "@open-party-lab/game-core": {
@@ -55,7 +56,10 @@
     }
   },
   "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/three": "^0.184.1",
     "phaser": "^3.90.0",
+    "three": "^0.184.0",
     "typescript": "^5.7.3"
   }
 }
