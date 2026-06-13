@@ -55,7 +55,8 @@ const neutralControls: DriftRacerControlState = {
   throttle: false,
   brake: false,
   drift: false,
-  boost: false
+  boost: false,
+  fire: false
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -558,7 +559,8 @@ export const serverGame: ServerGame<
         throttle: Boolean(input.throttle),
         brake: Boolean(input.brake),
         drift: Boolean(input.drift),
-        boost: Boolean(input.boost)
+        boost: Boolean(input.boost),
+        fire: Boolean(input.fire)
       },
       lastInputAt: input.sentAt ?? context.now
     };

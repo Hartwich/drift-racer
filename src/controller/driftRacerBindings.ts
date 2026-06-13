@@ -6,6 +6,7 @@ export interface DriftRacerControllerControls {
   brake: boolean;
   drift: boolean;
   boost: boolean;
+  fire: boolean;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -24,6 +25,7 @@ export function createDriftRacerDriveInput(
     brake: controls.brake,
     drift: controls.drift,
     boost: controls.boost,
+    fire: controls.fire,
     sentAt: Date.now()
   };
 }

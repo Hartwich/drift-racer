@@ -846,7 +846,7 @@ export class DriftRacerRenderer {
       for (const wheel of car.wheels) {
         wheel.rotation.z = car.wheelSpin;
       }
-      const steerAngle = car.steer * 0.5;
+      const steerAngle = -car.steer * 0.5;
       for (const pivot of car.frontPivots) {
         pivot.rotation.y = steerAngle;
       }
