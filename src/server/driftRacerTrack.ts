@@ -41,7 +41,7 @@ export const driftRacerTrackConfig = {
   lapsToWin: 3,
   maxRaceMs: 150_000,
   carRadius: 30,
-  wallHeight: 90
+  wallHeight: 28
 } as const;
 
 // Hand-authored clockwise circuit. Start/finish sits on the long bottom
@@ -258,3 +258,28 @@ export function projectPointToDriftRacerTrack(x: number, y: number): DriftRacerT
 
   return bestProjection;
 }
+
+export interface DriftRacerPickupAnchor {
+  id: string;
+  x: number;
+  y: number;
+}
+
+// Item-box rows spread around the lap (3 boxes across the track each).
+export const driftRacerPickups: DriftRacerPickupAnchor[] = (() => {
+  const rows = [0.27, 0.52, 0.82];
+  const lanes = [-0.26, 0, 0.26];
+  const out: DriftRacerPickupAnchor[] = [];
+  rows.forEach((frac, rowIndex) => {
+    const sample = sampleDriftRacerTrack(frac * driftRacerTrack.length);
+    lanes.forEach((lane, laneIndex) => {
+      const offset = lane * driftRacerTrackConfig.trackWidth;
+      out.push({
+        id: `pickup-${rowIndex}-${laneIndex}`,
+        x: sample.x + sample.normalX * offset,
+        y: sample.y + sample.normalY * offset
+      });
+    });
+  });
+  return out;
+})();

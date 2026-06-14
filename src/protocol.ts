@@ -30,11 +30,34 @@ export interface DriftRacerControlState {
   fire: boolean;
 }
 
+/** Weapons that can be picked up from item boxes. */
+export type DriftRacerWeaponKind = "rocket" | "mine" | "turbo";
+
 /** A jump ramp on the track (take-off rising over `length` to `peak`). */
 export interface DriftRacerRampState {
   startDistance: number;
   length: number;
   peak: number;
+}
+
+/** An item box on the track that grants a random weapon. */
+export interface DriftRacerPickupState {
+  id: string;
+  x: number;
+  y: number;
+  active: boolean;
+}
+
+/** A live projectile (rocket flying forward, or a dropped mine). */
+export interface DriftRacerProjectileState {
+  id: string;
+  kind: "rocket" | "mine";
+  ownerId: string;
+  x: number;
+  y: number;
+  z: number;
+  angleRad: number;
+  armed: boolean;
 }
 
 export interface DriftRacerRacerState {
@@ -62,6 +85,10 @@ export interface DriftRacerRacerState {
   boostFuel: number;
   boostActive: boolean;
   steerInput: number;
+  /** Held weapon from a pickup, or null. */
+  weapon: DriftRacerWeaponKind | null;
+  /** True while spun out after a weapon hit. */
+  spunOut: boolean;
 }
 
 export interface DriftRacerState {
@@ -79,5 +106,7 @@ export interface DriftRacerState {
   isTimedOut: boolean;
   track: DriftRacerTrackPoint[];
   ramps: DriftRacerRampState[];
+  pickups: DriftRacerPickupState[];
+  projectiles: DriftRacerProjectileState[];
   racers: DriftRacerRacerState[];
 }
