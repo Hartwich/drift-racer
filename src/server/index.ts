@@ -15,15 +15,17 @@ import type {
   DriftRacerState,
   DriftRacerWeaponKind
 } from "../protocol.js";
-import { driftRacerManifest } from "../manifest.js";
+import { driftRacerManifest, driftRacerRoomSettingKeys } from "../manifest.js";
 import {
-  driftRacerPickups,
-  driftRacerRamps,
-  driftRacerTrack,
   driftRacerTrackConfig,
+  driftRacerTrackIds,
+  getPickups,
+  getRamps,
+  getTrack,
   projectPointToDriftRacerTrack,
   sampleDriftRacerTrack,
-  sampleRampHeight
+  sampleRampHeight,
+  setActiveDriftRacerTrack
 } from "./driftRacerTrack.js";
 import type {
   DriftRacerRuntimePickup,
@@ -48,27 +50,62 @@ const driftFuelGainPerSecond = 0.28;
 const boostFuelUsePerSecond = 0.56;
 const boostAcceleration = 920;
 
-// Vertical / track-interaction tuning.
+// Vertical / track interaction.
 const gravity = 760;
 const jumpFactor = 1.5;
 const minJumpSpeed = 240;
 const airSteerFactor = 0.35;
 const wallMaxScrub = 0.5;
 
-// Weapon tuning.
-const weaponCooldownMs = 300;
-const rocketSpeed = 1_020;
-const rocketTtlMs = 2_200;
-const rocketHitRadius = 50;
-const mineTtlMs = 12_000;
+// Weapons.
+const weaponCooldownMs = 250;
+const rocketSpeed = 1_120;
+const rocketTtlMs = 2_600;
+const rocketHitRadius = 52;
+const homingSpeed = 900;
+const homingTtlMs = 4_000;
+const homingTurnRate = 3.4;
+const mineTtlMs = 14_000;
 const mineArmMs = 700;
 const mineHitRadius = 48;
-const turboDurationMs = 1_600;
+const oilTtlMs = 12_000;
+const oilHitRadius = 62;
+const turboDurationMs = 1_800;
+const shockRange = 620;
 const stunDurationMs = 1_500;
 const stunSpinRate = 14;
-const pickupRadius = 52;
+const pickupRadius = 54;
 const pickupRespawnMs = 5_000;
-const weaponKinds: DriftRacerWeaponKind[] = ["rocket", "rocket", "mine", "turbo"];
+/** Aim assist: a rocket fired within this cone snaps onto the target. */
+const aimAssistCone = 0.42;
+const aimAssistRange = 1_400;
+
+/** Weighted item pool, biased by how far behind the racer is. */
+const frontItems: DriftRacerWeaponKind[] = ["rocket", "mine", "oil", "shield", "turbo"];
+const backItems: DriftRacerWeaponKind[] = ["homing", "rocket", "shock", "turbo", "shield", "oil"];
+
+const botNames = ["Turbo Tina", "Nitro Nick", "Sandy Sam", "Coco Kim", "Rex Rally"];
+const botColors = ["#f97316", "#a855f7", "#14b8a6", "#eab308", "#ec4899"];
+const minRacers = 4;
+
+interface DriftRacerSettings {
+  track: string;
+  laps: number;
+  bots: number;
+}
+
+function readSettings(context: ServerGameContext): DriftRacerSettings {
+  const settings = context.roomSettings ?? {};
+  const rawTrack = settings[driftRacerRoomSettingKeys.track];
+  const track = typeof rawTrack === "string" && (rawTrack === "rotate" || driftRacerTrackIds.includes(rawTrack))
+    ? rawTrack
+    : "rotate";
+  const rawLaps = settings[driftRacerRoomSettingKeys.laps];
+  const laps = typeof rawLaps === "number" && Number.isFinite(rawLaps) ? clamp(Math.round(rawLaps), 1, 6) : driftRacerTrackConfig.lapsToWin;
+  const rawBots = settings[driftRacerRoomSettingKeys.bots];
+  const bots = typeof rawBots === "number" && Number.isFinite(rawBots) ? clamp(Math.round(rawBots), 0, 5) : 3;
+  return { track, laps, bots };
+}
 
 const neutralControls: DriftRacerControlState = {
   steering: 0,
@@ -89,73 +126,98 @@ function normalizeAngle(angleRad: number): number {
   return normalized >= -Math.PI ? normalized : normalized + fullCircle;
 }
 
-function getPlayers(context: ServerGameContext): GamePlayerSummary[] {
-  if (context.players.length > 0) {
-    return context.players.slice(0, 4);
-  }
-
-  return [
-    {
-      id: "drift-racer-player",
-      name: "Player",
-      color: "#22d3ee",
-      score: 0,
-      isReady: true,
-      connected: true
-    }
-  ];
+function angleDelta(from: number, to: number): number {
+  let d = (to - from) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
 }
 
-function createRacers(context: ServerGameContext): DriftRacerRuntimeRacerState[] {
+function getPlayers(context: ServerGameContext): GamePlayerSummary[] {
+  return context.players.slice(0, 4);
+}
+
+function createRacer(
+  id: string,
+  name: string,
+  color: string,
+  index: number,
+  isBot: boolean,
+  now: number
+): DriftRacerRuntimeRacerState {
+  const laneOffsets = [-0.26, 0.26, -0.09, 0.09, -0.18, 0.18];
+  const row = Math.floor(index / 2);
+  const startDistance = 130 + row * 96;
+  const sample = sampleDriftRacerTrack(startDistance);
+  const laneOffset = (laneOffsets[index % laneOffsets.length] ?? 0) * driftRacerTrackConfig.trackWidth;
+
+  return {
+    playerId: id,
+    name,
+    color,
+    x: sample.x + sample.normalX * laneOffset,
+    y: sample.y + sample.normalY * laneOffset,
+    z: 0,
+    vz: 0,
+    airborne: false,
+    angleRad: sample.angleRad,
+    speed: 0,
+    lap: 0,
+    lapProgress: startDistance,
+    previousLapProgress: startDistance,
+    totalProgress: startDistance,
+    rank: index + 1,
+    finished: false,
+    finishMs: null,
+    finishOrder: null,
+    offTrack: false,
+    drifting: false,
+    boostFuel: 0.35,
+    boostActive: false,
+    steerInput: 0,
+    weapon: null,
+    spunOut: false,
+    shielded: false,
+    isBot,
+    lockedTargetId: null,
+    controls: neutralControls,
+    lastInputAt: now,
+    firePrev: false,
+    stunnedMs: 0,
+    weaponCooldownMs: 0,
+    turboMs: 0,
+    botAimAhead: 190,
+    botSkill: isBot ? 0.82 + Math.random() * 0.16 : 1
+  };
+}
+
+function createRacers(context: ServerGameContext, botCount: number): DriftRacerRuntimeRacerState[] {
   const players = getPlayers(context);
-  const laneOffsets = [-0.24, 0.24, -0.08, 0.08];
+  const racers = players.map((player, index) =>
+    createRacer(player.id, player.name, player.color, index, false, context.now)
+  );
 
-  return players.map((player, index) => {
-    const row = Math.floor(index / 2);
-    const startDistance = 110 + row * 92;
-    const sample = sampleDriftRacerTrack(startDistance);
-    const laneOffset = laneOffsets[index] * driftRacerTrackConfig.trackWidth;
-    const x = sample.x + sample.normalX * laneOffset;
-    const y = sample.y + sample.normalY * laneOffset;
-
-    return {
-      playerId: player.id,
-      name: player.name,
-      color: player.color,
-      x,
-      y,
-      z: 0,
-      vz: 0,
-      airborne: false,
-      angleRad: sample.angleRad,
-      speed: 0,
-      lap: 0,
-      lapProgress: startDistance,
-      previousLapProgress: startDistance,
-      totalProgress: startDistance,
-      rank: index + 1,
-      finished: false,
-      finishMs: null,
-      finishOrder: null,
-      offTrack: false,
-      drifting: false,
-      boostFuel: 0.35,
-      boostActive: false,
-      steerInput: 0,
-      weapon: null,
-      spunOut: false,
-      controls: neutralControls,
-      lastInputAt: context.now,
-      firePrev: false,
-      stunnedMs: 0,
-      weaponCooldownMs: 0,
-      turboMs: 0
-    };
-  });
+  // Add AI opponents (at least one rival when nobody else joined).
+  const humans = racers.length;
+  const bots = Math.max(botCount, humans === 1 ? Math.min(1, minRacers - 1) : 0);
+  for (let i = humans; i < humans + bots; i += 1) {
+    const botIndex = i - humans;
+    racers.push(
+      createRacer(
+        `bot-${botIndex}`,
+        botNames[botIndex % botNames.length],
+        botColors[botIndex % botColors.length],
+        i,
+        true,
+        context.now
+      )
+    );
+  }
+  return racers;
 }
 
 function createPickups(): DriftRacerRuntimePickup[] {
-  return driftRacerPickups.map((pickup) => ({
+  return getPickups().map((pickup) => ({
     id: pickup.id,
     x: pickup.x,
     y: pickup.y,
@@ -188,54 +250,42 @@ function toPublicRacer(racer: DriftRacerRuntimeRacerState): DriftRacerRacerState
     boostActive: racer.boostActive,
     steerInput: racer.steerInput,
     weapon: racer.weapon,
-    spunOut: racer.spunOut
+    spunOut: racer.spunOut,
+    shielded: racer.shielded,
+    isBot: racer.isBot,
+    lockedTargetId: racer.lockedTargetId
   };
 }
 
 function sortRacersForRank(racers: DriftRacerRuntimeRacerState[]): DriftRacerRuntimeRacerState[] {
   return [...racers].sort((a, b) => {
-    if (a.finished && b.finished) {
-      return (a.finishOrder ?? 999) - (b.finishOrder ?? 999);
-    }
-    if (a.finished !== b.finished) {
-      return a.finished ? -1 : 1;
-    }
+    if (a.finished && b.finished) return (a.finishOrder ?? 999) - (b.finishOrder ?? 999);
+    if (a.finished !== b.finished) return a.finished ? -1 : 1;
     return b.totalProgress - a.totalProgress;
   });
 }
 
 function assignRanks(racers: DriftRacerRuntimeRacerState[]): DriftRacerRuntimeRacerState[] {
   const rankByPlayerId = new Map<string, number>();
-  sortRacersForRank(racers).forEach((racer, index) => {
-    rankByPlayerId.set(racer.playerId, index + 1);
-  });
-  return racers.map((racer) => ({
-    ...racer,
-    rank: rankByPlayerId.get(racer.playerId) ?? racer.rank
-  }));
+  sortRacersForRank(racers).forEach((racer, index) => rankByPlayerId.set(racer.playerId, index + 1));
+  return racers.map((racer) => ({ ...racer, rank: rankByPlayerId.get(racer.playerId) ?? racer.rank }));
 }
 
 function updateRacerProgress(
   racer: DriftRacerRuntimeRacerState,
   elapsedMs: number,
-  nextFinishOrder: number
+  nextFinishOrder: number,
+  lapsToWin: number
 ): { racer: DriftRacerRuntimeRacerState; nextFinishOrder: number } {
+  const track = getTrack();
   const projection = projectPointToDriftRacerTrack(racer.x, racer.y);
   const lapProgress = projection.distance;
   const crossedForward =
-    racer.previousLapProgress > driftRacerTrack.length * 0.78 &&
-    lapProgress < driftRacerTrack.length * 0.22 &&
-    racer.speed > 70;
+    racer.previousLapProgress > track.length * 0.78 && lapProgress < track.length * 0.22 && racer.speed > 70;
   const crossedBackward =
-    racer.previousLapProgress < driftRacerTrack.length * 0.18 &&
-    lapProgress > driftRacerTrack.length * 0.82 &&
-    racer.speed < -55;
-  const lap = crossedForward
-    ? racer.lap + 1
-    : crossedBackward
-      ? Math.max(0, racer.lap - 1)
-      : racer.lap;
-  const finished = racer.finished || lap >= driftRacerTrackConfig.lapsToWin;
+    racer.previousLapProgress < track.length * 0.18 && lapProgress > track.length * 0.82 && racer.speed < -55;
+  const lap = crossedForward ? racer.lap + 1 : crossedBackward ? Math.max(0, racer.lap - 1) : racer.lap;
+  const finished = racer.finished || lap >= lapsToWin;
   const finishOrder = finished && racer.finishOrder === null ? nextFinishOrder : racer.finishOrder;
   const finishMs = finished && racer.finishMs === null ? elapsedMs : racer.finishMs;
 
@@ -245,13 +295,36 @@ function updateRacerProgress(
       lap,
       lapProgress,
       previousLapProgress: lapProgress,
-      totalProgress: lap * driftRacerTrack.length + lapProgress,
+      totalProgress: lap * track.length + lapProgress,
       finished,
       finishOrder,
       finishMs,
       offTrack: projection.lateralDistance > driftRacerTrackConfig.trackWidth * 0.5
     },
     nextFinishOrder: finished && racer.finishOrder === null ? nextFinishOrder + 1 : nextFinishOrder
+  };
+}
+
+/** Simple pure-pursuit AI: aim ahead on the racing line, brake for tight turns. */
+function driveBot(racer: DriftRacerRuntimeRacerState): DriftRacerControlState {
+  const projection = projectPointToDriftRacerTrack(racer.x, racer.y);
+  const lookahead = racer.botAimAhead * (0.7 + 0.5 * racer.botSkill);
+  const aim = sampleDriftRacerTrack(projection.distance + lookahead);
+  const lane = Math.sin(projection.distance * 0.004) * 0.16 * driftRacerTrackConfig.trackWidth;
+  const targetX = aim.x + aim.normalX * lane;
+  const targetY = aim.y + aim.normalY * lane;
+  const delta = angleDelta(racer.angleRad, Math.atan2(targetY - racer.y, targetX - racer.x));
+  const steering = clamp(delta * 2.2, -1, 1);
+  const sharp = Math.abs(delta) > 0.85;
+
+  return {
+    steering,
+    throttle: true,
+    brake: sharp && racer.speed > 540 * racer.botSkill,
+    drift: sharp && racer.speed > 360,
+    boost: !sharp && racer.boostFuel > 0.45 && racer.speed > 300,
+    // Bots fire whenever they hold something; the edge detector handles rate.
+    fire: racer.weapon !== null && !racer.firePrev
   };
 }
 
@@ -274,12 +347,10 @@ function simulateRacer(
 
   const seconds = Math.max(0.001, deltaMs / 1000);
 
-  // Spun out after a weapon hit: no control, spin in place, bleed speed.
   if (racer.stunnedMs > 0) {
     const stunnedMs = Math.max(0, racer.stunnedMs - deltaMs);
     return {
       ...racer,
-      controls: connected ? racer.controls : neutralControls,
       speed: racer.speed * Math.max(0, 1 - 1.6 * seconds),
       angleRad: normalizeAngle(racer.angleRad + stunSpinRate * seconds),
       stunnedMs,
@@ -290,43 +361,28 @@ function simulateRacer(
     };
   }
 
-  const controls = connected ? racer.controls : neutralControls;
+  const controls = racer.isBot ? racer.controls : connected ? racer.controls : neutralControls;
   const steering = clamp(controls.steering, -1, 1);
   const airborne = racer.airborne;
   const turbo = racer.turboMs > 0;
   const turboMs = Math.max(0, racer.turboMs - deltaMs);
-  const driftRequested =
-    !airborne && controls.drift && Math.abs(steering) > 0.12 && racer.speed > 170;
+  const driftRequested = !airborne && controls.drift && Math.abs(steering) > 0.12 && racer.speed > 170;
   const boostActive = turbo || (controls.boost && racer.boostFuel > 0.02 && racer.speed > 80);
   const effectiveOffTrack = racer.offTrack && !airborne;
-  const maxSpeed = effectiveOffTrack
-    ? maxOffTrackSpeed
-    : boostActive
-      ? maxBoostSpeed
-      : maxForwardSpeed;
+  const maxSpeed = effectiveOffTrack ? maxOffTrackSpeed : boostActive ? maxBoostSpeed : maxForwardSpeed;
   let speed = racer.speed;
 
-  if (controls.throttle) {
-    speed += acceleration * seconds;
-  }
-  if (controls.brake) {
-    speed += speed > 20 ? -brakeAcceleration * seconds : -reverseAcceleration * seconds;
-  }
+  if (controls.throttle) speed += acceleration * seconds;
+  if (controls.brake) speed += speed > 20 ? -brakeAcceleration * seconds : -reverseAcceleration * seconds;
   speed -= speed * (effectiveOffTrack ? offTrackDrag : rollingDrag) * seconds;
-  if (boostActive) {
-    speed += boostAcceleration * seconds;
-  }
-  if (driftRequested) {
-    speed -= Math.max(0, speed) * 0.34 * seconds;
-  }
+  if (boostActive) speed += boostAcceleration * seconds;
+  if (driftRequested) speed -= Math.max(0, speed) * 0.34 * seconds;
   speed = clamp(speed, maxReverseSpeed, maxSpeed);
 
   const speedFactor = clamp(Math.abs(speed) / 300, 0, 1);
   const turnRate = (driftRequested ? driftSteeringRate : steeringRate) * (airborne ? airSteerFactor : 1);
   const directionSign = speed >= 0 ? 1 : -1;
-  const angleRad = normalizeAngle(
-    racer.angleRad + steering * turnRate * speedFactor * directionSign * seconds
-  );
+  const angleRad = normalizeAngle(racer.angleRad + steering * turnRate * speedFactor * directionSign * seconds);
   const slideAngle = driftRequested ? steering * 0.34 * speedFactor : 0;
   const moveAngle = angleRad + slideAngle;
   const x = clamp(
@@ -385,8 +441,7 @@ function resolveTrackInteractions(
       const over = projection.lateralDistance - maxLateral;
       x -= projection.normalX * sign * over;
       y -= projection.normalY * sign * over;
-      const hit = Math.min(1, over / driftRacerTrackConfig.carRadius);
-      speed *= 1 - wallMaxScrub * hit;
+      speed *= 1 - wallMaxScrub * Math.min(1, over / driftRacerTrackConfig.carRadius);
     }
   }
 
@@ -420,27 +475,19 @@ function resolveRacerBumps(racers: DriftRacerRuntimeRacerState[]): DriftRacerRun
   const minDistance = driftRacerTrackConfig.carRadius * 1.9;
   const restitution = 0.28;
 
-  for (let firstIndex = 0; firstIndex < nextRacers.length; firstIndex += 1) {
-    for (let secondIndex = firstIndex + 1; secondIndex < nextRacers.length; secondIndex += 1) {
-      const first = nextRacers[firstIndex];
-      const second = nextRacers[secondIndex];
-      // Cars at very different heights (one mid-jump) do not collide.
-      if (Math.abs(first.z - second.z) > driftRacerTrackConfig.carRadius * 1.4) {
-        continue;
-      }
+  for (let i = 0; i < nextRacers.length; i += 1) {
+    for (let j = i + 1; j < nextRacers.length; j += 1) {
+      const first = nextRacers[i];
+      const second = nextRacers[j];
+      if (Math.abs(first.z - second.z) > driftRacerTrackConfig.carRadius * 1.4) continue;
       const dx = second.x - first.x;
       const dy = second.y - first.y;
       const distance = Math.hypot(dx, dy);
-      if (distance <= 0.001 || distance >= minDistance) {
-        continue;
-      }
+      if (distance <= 0.001 || distance >= minDistance) continue;
 
       const nx = dx / distance;
       const ny = dy / distance;
       const overlap = minDistance - distance;
-
-      // Positional separation weighted by speed: the faster car shoves the
-      // slower one more (so ramming pushes the target off its line).
       const s1 = Math.abs(first.speed);
       const s2 = Math.abs(second.speed);
       const total = s1 + s2 + 1;
@@ -451,8 +498,6 @@ function resolveRacerBumps(racers: DriftRacerRuntimeRacerState[]): DriftRacerRun
       second.x = clamp(second.x + nx * push2, driftRacerTrackConfig.carRadius, driftRacerTrackConfig.worldWidth - driftRacerTrackConfig.carRadius);
       second.y = clamp(second.y + ny * push2, driftRacerTrackConfig.carRadius, driftRacerTrackConfig.worldHeight - driftRacerTrackConfig.carRadius);
 
-      // Momentum impulse along the contact normal (treat each car's velocity as
-      // speed along its heading), so a rear-end ram transfers speed forward.
       const v1x = Math.cos(first.angleRad) * first.speed;
       const v1y = Math.sin(first.angleRad) * first.speed;
       const v2x = Math.cos(second.angleRad) * second.speed;
@@ -469,8 +514,38 @@ function resolveRacerBumps(racers: DriftRacerRuntimeRacerState[]): DriftRacerRun
       }
     }
   }
-
   return nextRacers;
+}
+
+/** Best target for the held weapon: nearest rival inside the forward cone. */
+function findTarget(
+  racer: DriftRacerRuntimeRacerState,
+  racers: DriftRacerRuntimeRacerState[]
+): DriftRacerRuntimeRacerState | null {
+  let best: DriftRacerRuntimeRacerState | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const other of racers) {
+    if (other.playerId === racer.playerId || other.finished) continue;
+    const dx = other.x - racer.x;
+    const dy = other.y - racer.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance > aimAssistRange) continue;
+    const off = Math.abs(angleDelta(racer.angleRad, Math.atan2(dy, dx)));
+    if (off > aimAssistCone) continue;
+    const score = distance * (1 + off);
+    if (score < bestScore) {
+      bestScore = score;
+      best = other;
+    }
+  }
+  return best;
+}
+
+function rollItem(racer: DriftRacerRuntimeRacerState, racerCount: number): DriftRacerWeaponKind {
+  // Trailing racers get the punchier catch-up items.
+  const behind = racer.rank > Math.ceil(racerCount / 2);
+  const pool = behind ? backItems : frontItems;
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 interface WeaponUpdate {
@@ -489,29 +564,22 @@ function updateWeapons(
   let nextProjectileId = state.nextProjectileId;
   const projectiles: DriftRacerRuntimeProjectile[] = state.projectiles.map((p) => ({ ...p }));
 
-  // Pickups: respawn timers + collection.
   const pickups = state.pickups.map((pickup) => {
     let active = pickup.active;
     let respawnMs = pickup.respawnMs;
     if (!active) {
       respawnMs = Math.max(0, respawnMs - deltaMs);
-      if (respawnMs === 0) {
-        active = true;
-      }
+      if (respawnMs === 0) active = true;
     }
     return { ...pickup, active, respawnMs };
   });
 
   for (const racer of racers) {
-    if (racer.finished || racer.stunnedMs > 0 || racer.weapon !== null) {
-      continue;
-    }
+    if (racer.finished || racer.stunnedMs > 0 || racer.weapon !== null) continue;
     for (const pickup of pickups) {
-      if (!pickup.active) {
-        continue;
-      }
+      if (!pickup.active) continue;
       if (Math.hypot(pickup.x - racer.x, pickup.y - racer.y) < pickupRadius) {
-        racer.weapon = weaponKinds[Math.floor(Math.random() * weaponKinds.length)];
+        racer.weapon = rollItem(racer, racers.length);
         pickup.active = false;
         pickup.respawnMs = pickupRespawnMs;
         break;
@@ -519,69 +587,110 @@ function updateWeapons(
     }
   }
 
-  // Firing (rising edge of the fire button).
+  // Keep a live lock so the HUD can show who is in the crosshair.
+  for (const racer of racers) {
+    const target = racer.weapon && (racer.weapon === "rocket" || racer.weapon === "homing" || racer.weapon === "shock")
+      ? findTarget(racer, racers)
+      : null;
+    racer.lockedTargetId = target ? target.playerId : null;
+  }
+
   for (const racer of racers) {
     const firePressed = racer.controls.fire === true;
     const edge = firePressed && !racer.firePrev;
     racer.firePrev = firePressed;
     racer.weaponCooldownMs = Math.max(0, racer.weaponCooldownMs - deltaMs);
 
-    if (!edge || racer.finished || racer.stunnedMs > 0 || racer.weaponCooldownMs > 0 || !racer.weapon) {
-      continue;
-    }
+    if (!edge || racer.finished || racer.stunnedMs > 0 || racer.weaponCooldownMs > 0 || !racer.weapon) continue;
 
     const weapon = racer.weapon;
     racer.weapon = null;
     racer.weaponCooldownMs = weaponCooldownMs;
-    const cos = Math.cos(racer.angleRad);
-    const sin = Math.sin(racer.angleRad);
+    const target = findTarget(racer, racers);
 
-    if (weapon === "rocket") {
+    if (weapon === "rocket" || weapon === "homing") {
+      // Aim assist: launch straight at the locked target instead of the nose.
+      const aimAngle = target
+        ? Math.atan2(target.y - racer.y, target.x - racer.x)
+        : racer.angleRad;
+      const speed = weapon === "homing" ? homingSpeed : rocketSpeed;
+      const cos = Math.cos(aimAngle);
+      const sin = Math.sin(aimAngle);
       projectiles.push({
         id: `proj-${nextProjectileId}`,
-        kind: "rocket",
+        kind: weapon,
         ownerId: racer.playerId,
-        x: racer.x + cos * driftRacerTrackConfig.carRadius * 1.6,
-        y: racer.y + sin * driftRacerTrackConfig.carRadius * 1.6,
+        x: racer.x + cos * driftRacerTrackConfig.carRadius * 1.7,
+        y: racer.y + sin * driftRacerTrackConfig.carRadius * 1.7,
         z: 20,
-        angleRad: racer.angleRad,
+        angleRad: aimAngle,
         armed: true,
-        vx: cos * rocketSpeed,
-        vy: sin * rocketSpeed,
-        ttlMs: rocketTtlMs,
-        armDelayMs: 0
+        vx: cos * speed,
+        vy: sin * speed,
+        ttlMs: weapon === "homing" ? homingTtlMs : rocketTtlMs,
+        armDelayMs: 0,
+        targetId: weapon === "homing" ? (target ? target.playerId : null) : null
       });
       nextProjectileId += 1;
-    } else if (weapon === "mine") {
+    } else if (weapon === "mine" || weapon === "oil") {
+      const cos = Math.cos(racer.angleRad);
+      const sin = Math.sin(racer.angleRad);
       projectiles.push({
         id: `proj-${nextProjectileId}`,
-        kind: "mine",
+        kind: weapon,
         ownerId: racer.playerId,
-        x: racer.x - cos * driftRacerTrackConfig.carRadius * 1.6,
-        y: racer.y - sin * driftRacerTrackConfig.carRadius * 1.6,
-        z: 6,
+        x: racer.x - cos * driftRacerTrackConfig.carRadius * 1.8,
+        y: racer.y - sin * driftRacerTrackConfig.carRadius * 1.8,
+        z: weapon === "mine" ? 6 : 2,
         angleRad: racer.angleRad,
-        armed: false,
+        armed: weapon === "oil",
         vx: 0,
         vy: 0,
-        ttlMs: mineTtlMs,
-        armDelayMs: mineArmMs
+        ttlMs: weapon === "mine" ? mineTtlMs : oilTtlMs,
+        armDelayMs: weapon === "mine" ? mineArmMs : 0,
+        targetId: null
       });
       nextProjectileId += 1;
     } else if (weapon === "turbo") {
       racer.turboMs = turboDurationMs;
       racer.boostFuel = 1;
+    } else if (weapon === "shield") {
+      racer.shielded = true;
+    } else if (weapon === "shock") {
+      // Shockwave: spins out every rival within range that is ahead of us.
+      for (const other of racers) {
+        if (other.playerId === racer.playerId || other.finished || other.stunnedMs > 0) continue;
+        if (other.totalProgress <= racer.totalProgress) continue;
+        if (Math.hypot(other.x - racer.x, other.y - racer.y) > shockRange) continue;
+        if (other.shielded) {
+          other.shielded = false;
+          continue;
+        }
+        other.stunnedMs = stunDurationMs * 0.8;
+        other.spunOut = true;
+        other.speed *= 0.45;
+        other.turboMs = 0;
+      }
     }
   }
 
-  // Advance projectiles and resolve hits.
   const seconds = deltaMs / 1000;
   const survivors: DriftRacerRuntimeProjectile[] = [];
   for (const projectile of projectiles) {
-    let { x, y, ttlMs, armDelayMs, armed } = projectile;
-    if (projectile.kind === "rocket") {
-      x += projectile.vx * seconds;
-      y += projectile.vy * seconds;
+    let { x, y, ttlMs, armDelayMs, armed, vx, vy, angleRad } = projectile;
+
+    if (projectile.kind === "rocket" || projectile.kind === "homing") {
+      if (projectile.kind === "homing") {
+        const target = racers.find((r) => r.playerId === projectile.targetId && !r.finished);
+        if (target) {
+          const desired = Math.atan2(target.y - y, target.x - x);
+          angleRad = normalizeAngle(angleRad + clamp(angleDelta(angleRad, desired), -homingTurnRate * seconds, homingTurnRate * seconds));
+          vx = Math.cos(angleRad) * homingSpeed;
+          vy = Math.sin(angleRad) * homingSpeed;
+        }
+      }
+      x += vx * seconds;
+      y += vy * seconds;
     } else {
       armDelayMs = Math.max(0, armDelayMs - deltaMs);
       armed = armDelayMs === 0;
@@ -589,34 +698,44 @@ function updateWeapons(
     ttlMs -= deltaMs;
 
     let dead = ttlMs <= 0;
-
-    if (projectile.kind === "rocket") {
+    if (projectile.kind === "rocket" || projectile.kind === "homing") {
       const projection = projectPointToDriftRacerTrack(x, y);
-      if (projection.lateralDistance > driftRacerTrackConfig.trackWidth * 0.6) {
-        dead = true;
-      }
+      if (projection.lateralDistance > driftRacerTrackConfig.trackWidth * 0.62) dead = true;
     }
 
     if (!dead && armed) {
       for (const racer of racers) {
-        if (racer.playerId === projectile.ownerId || racer.finished || racer.stunnedMs > 0) {
-          continue;
-        }
-        const hitRadius = projectile.kind === "rocket" ? rocketHitRadius : mineHitRadius;
-        if (Math.hypot(racer.x - x, racer.y - y) < hitRadius) {
+        if (racer.playerId === projectile.ownerId || racer.finished || racer.stunnedMs > 0) continue;
+        const hitRadius =
+          projectile.kind === "rocket" || projectile.kind === "homing"
+            ? rocketHitRadius
+            : projectile.kind === "mine"
+              ? mineHitRadius
+              : oilHitRadius;
+        if (Math.hypot(racer.x - x, racer.y - y) >= hitRadius) continue;
+
+        if (racer.shielded) {
+          racer.shielded = false;
+        } else if (projectile.kind === "oil") {
+          // Oil slick: a shorter spin, and it stays for the next victim.
+          racer.stunnedMs = stunDurationMs * 0.7;
+          racer.spunOut = true;
+          racer.speed *= 0.6;
+          survivors.push({ ...projectile, x, y, ttlMs, armDelayMs, armed, vx, vy, angleRad });
+          dead = true;
+          break;
+        } else {
           racer.stunnedMs = stunDurationMs;
           racer.spunOut = true;
           racer.speed *= 0.35;
           racer.turboMs = 0;
-          dead = true;
-          break;
         }
+        dead = true;
+        break;
       }
     }
 
-    if (!dead) {
-      survivors.push({ ...projectile, x, y, ttlMs, armDelayMs, armed });
-    }
+    if (!dead) survivors.push({ ...projectile, x, y, ttlMs, armDelayMs, armed, vx, vy, angleRad });
   }
 
   return { racers, projectiles: survivors, pickups, nextProjectileId };
@@ -624,13 +743,9 @@ function updateWeapons(
 
 function buildRaceMessage(state: DriftRacerRuntimeState, language: ServerGameContext["language"]): string {
   const leader = sortRacersForRank(state.racers)[0];
-  if (!leader) {
-    return language === "en" ? "Race finished." : "Rennen beendet.";
-  }
+  if (!leader) return language === "en" ? "Race finished." : "Rennen beendet.";
   if (state.isTimedOut) {
-    return language === "en"
-      ? `${leader.name} leads at the time limit.`
-      : `${leader.name} fuehrt beim Zeitlimit.`;
+    return language === "en" ? `${leader.name} leads at the time limit.` : `${leader.name} fuehrt beim Zeitlimit.`;
   }
   return language === "en" ? `${leader.name} reaches the finish.` : `${leader.name} erreicht das Ziel.`;
 }
@@ -641,10 +756,15 @@ function tickRace(
   context: ServerGameContext
 ): DriftRacerRuntimeState {
   const connectedByPlayerId = new Map(context.players.map((player) => [player.id, player.connected]));
+
+  // AI opponents pick their own controls before the shared physics step.
   let racers = state.racers.map((racer) =>
-    simulateRacer(racer, deltaMs, connectedByPlayerId.get(racer.playerId) !== false)
+    racer.isBot && !racer.finished && racer.stunnedMs <= 0 ? { ...racer, controls: driveBot(racer) } : racer
   );
 
+  racers = racers.map((racer) =>
+    simulateRacer(racer, deltaMs, connectedByPlayerId.get(racer.playerId) !== false)
+  );
   racers = resolveRacerBumps(racers);
   racers = racers.map((racer) => resolveTrackInteractions(racer, deltaMs));
 
@@ -654,13 +774,14 @@ function tickRace(
   let nextFinishOrder = state.nextFinishOrder;
   const elapsedMs = Math.min(state.maxRaceMs, state.elapsedMs + deltaMs);
   racers = racers.map((racer) => {
-    const progressUpdate = updateRacerProgress(racer, elapsedMs, nextFinishOrder);
+    const progressUpdate = updateRacerProgress(racer, elapsedMs, nextFinishOrder, state.lapsToWin);
     nextFinishOrder = progressUpdate.nextFinishOrder;
     return progressUpdate.racer;
   });
   racers = assignRanks(racers);
 
-  const allFinished = racers.length > 0 && racers.every((racer) => racer.finished);
+  const humans = racers.filter((racer) => !racer.isBot);
+  const allFinished = humans.length > 0 ? humans.every((r) => r.finished) : racers.every((r) => r.finished);
   const isTimedOut = elapsedMs >= state.maxRaceMs;
   const leader = sortRacersForRank(racers)[0];
 
@@ -677,7 +798,8 @@ function tickRace(
     winnerPlayerId: allFinished || isTimedOut ? leader?.playerId : state.winnerPlayerId,
     winnerName: allFinished || isTimedOut ? leader?.name : state.winnerName,
     updatedAt: context.now,
-    message: allFinished || isTimedOut ? buildRaceMessage({ ...state, racers, isTimedOut }, context.language) : state.message
+    message:
+      allFinished || isTimedOut ? buildRaceMessage({ ...state, racers, isTimedOut }, context.language) : state.message
   };
 }
 
@@ -696,6 +818,8 @@ function toPublicProjectile(projectile: DriftRacerRuntimeProjectile): DriftRacer
 
 function buildPublicState(state: DriftRacerRuntimeState): DriftRacerState {
   return {
+    trackId: state.trackId,
+    trackName: state.trackName,
     worldWidth: state.worldWidth,
     worldHeight: state.worldHeight,
     trackWidth: state.trackWidth,
@@ -710,64 +834,105 @@ function buildPublicState(state: DriftRacerRuntimeState): DriftRacerState {
     isTimedOut: state.isTimedOut,
     track: state.track,
     ramps: state.ramps,
-    pickups: state.pickups.map((pickup) => ({ id: pickup.id, x: pickup.x, y: pickup.y, active: pickup.active })),
+    pickups: state.pickups.map((p) => ({ id: p.id, x: p.x, y: p.y, active: p.active })),
     projectiles: state.projectiles.map(toPublicProjectile),
     racers: state.racers.map(toPublicRacer)
   };
 }
 
 function buildScore(state: DriftRacerRuntimeState): ScoreEntry[] {
-  const racerCount = state.racers.length;
-  return sortRacersForRank(state.racers).map((racer, index) => ({
+  // Bots never score; humans are ranked among themselves.
+  const humans = sortRacersForRank(state.racers).filter((racer) => !racer.isBot);
+  return humans.map((racer, index) => ({
     playerId: racer.playerId,
-    delta: Math.max(1, racerCount - index),
+    delta: Math.max(1, humans.length - index),
     reason: index === 0 ? "Drift Racer Sieg" : "Drift Racer Platzierung"
   }));
 }
 
-export const serverGame: ServerGame<
-  DriftRacerRuntimeState,
-  DriftRacerInput,
-  DriftRacerState
-> = {
+function buildTrackState(): {
+  trackId: string;
+  trackName: string;
+  trackLength: number;
+  track: DriftRacerState["track"];
+  ramps: DriftRacerState["ramps"];
+} {
+  const track = getTrack();
+  return {
+    trackId: track.id,
+    trackName: track.name,
+    trackLength: track.length,
+    track: track.points,
+    ramps: getRamps()
+  };
+}
+
+export const serverGame: ServerGame<DriftRacerRuntimeState, DriftRacerInput, DriftRacerState> = {
   manifest: driftRacerManifest,
+  handleHostAction(state, action) {
+    const hostAction = action as { type?: string; track?: unknown; laps?: unknown; bots?: unknown } | null;
+    if (state || hostAction?.type !== "configure-lobby") {
+      return {};
+    }
+
+    const roomSettings: Record<string, unknown> = {};
+    if (typeof hostAction.track === "string" && (hostAction.track === "rotate" || driftRacerTrackIds.includes(hostAction.track))) {
+      roomSettings[driftRacerRoomSettingKeys.track] = hostAction.track;
+    }
+    if (typeof hostAction.laps === "number" && Number.isFinite(hostAction.laps)) {
+      roomSettings[driftRacerRoomSettingKeys.laps] = clamp(Math.round(hostAction.laps), 1, 6);
+    }
+    if (typeof hostAction.bots === "number" && Number.isFinite(hostAction.bots)) {
+      roomSettings[driftRacerRoomSettingKeys.bots] = clamp(Math.round(hostAction.bots), 0, 5);
+    }
+    return { roomSettings };
+  },
   createInitialState(context) {
+    const settings = readSettings(context);
+    if (settings.track !== "rotate") {
+      setActiveDriftRacerTrack(settings.track);
+    }
+    const trackState = buildTrackState();
     return {
       ...createBaseRoundState("round_intro", context.now, {
         durationMs: phaseTimings.roundIntroMs,
         message: context.language === "en" ? "Engines warming up." : "Motoren laufen warm."
       }),
+      ...trackState,
       worldWidth: driftRacerTrackConfig.worldWidth,
       worldHeight: driftRacerTrackConfig.worldHeight,
       trackWidth: driftRacerTrackConfig.trackWidth,
-      trackLength: driftRacerTrack.length,
       wallHeight: driftRacerTrackConfig.wallHeight,
-      lapsToWin: driftRacerTrackConfig.lapsToWin,
+      lapsToWin: settings.laps,
       maxRaceMs: driftRacerTrackConfig.maxRaceMs,
       elapsedMs: 0,
       tick: 0,
       winnerPlayerId: undefined,
       winnerName: undefined,
       isTimedOut: false,
-      track: driftRacerTrack.points,
-      ramps: driftRacerRamps,
       pickups: createPickups(),
       projectiles: [],
-      racers: assignRanks(createRacers(context)),
+      racers: assignRanks(createRacers(context, settings.bots)),
       nextFinishOrder: 1,
       nextProjectileId: 1
     };
   },
   startRound(_state, context) {
+    const settings = readSettings(context);
+    // Fixed pick from the setup screen, or rotate to the next map each race.
+    setActiveDriftRacerTrack(settings.track === "rotate" ? undefined : settings.track);
+    const trackState = buildTrackState();
     return transitionRoundState(
       {
         ..._state,
+        ...trackState,
+        lapsToWin: settings.laps,
         elapsedMs: 0,
         tick: 0,
         winnerPlayerId: undefined,
         winnerName: undefined,
         isTimedOut: false,
-        racers: assignRanks(createRacers(context)),
+        racers: assignRanks(createRacers(context, settings.bots)),
         pickups: createPickups(),
         projectiles: [],
         nextFinishOrder: 1,
@@ -782,13 +947,10 @@ export const serverGame: ServerGame<
     );
   },
   handleInput(state, input, context) {
-    if (input.type !== "drive" || state.phase !== "playing") {
-      return state;
-    }
+    if (input.type !== "drive" || state.phase !== "playing") return state;
     const racerIndex = state.racers.findIndex((racer) => racer.playerId === input.playerId);
-    if (racerIndex === -1) {
-      return state;
-    }
+    if (racerIndex === -1) return state;
+
     const racers = [...state.racers];
     const racer = racers[racerIndex];
     racers[racerIndex] = {
@@ -803,24 +965,16 @@ export const serverGame: ServerGame<
       },
       lastInputAt: input.sentAt ?? context.now
     };
-    return {
-      ...state,
-      racers,
-      updatedAt: input.sentAt ?? context.now
-    };
+    return { ...state, racers, updatedAt: input.sentAt ?? context.now };
   },
   tick(state, deltaMs, context) {
-    if (state.phase !== "playing") {
-      return state;
-    }
+    if (state.phase !== "playing") return state;
     return tickRace(state, deltaMs, context);
   },
   isRoundFinished(state) {
-    return (
-      state.phase === "locked" ||
-      state.isTimedOut ||
-      (state.racers.length > 0 && state.racers.every((racer) => racer.finished))
-    );
+    const humans = state.racers.filter((racer) => !racer.isBot);
+    const done = humans.length > 0 ? humans.every((r) => r.finished) : state.racers.every((r) => r.finished);
+    return state.phase === "locked" || state.isTimedOut || (state.racers.length > 0 && done);
   },
   buildScore(state) {
     return buildScore(state);

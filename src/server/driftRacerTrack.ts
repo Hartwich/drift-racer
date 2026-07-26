@@ -26,44 +26,128 @@ interface TrackSegment {
 }
 
 export interface DriftRacerRamp {
-  /** Track distance where the take-off ramp begins to rise. */
   startDistance: number;
-  /** Length of the rising take-off (lip is at startDistance + length). */
   length: number;
-  /** Peak height of the ramp lip, in world units. */
   peak: number;
 }
 
+export interface DriftRacerPickupAnchor {
+  id: string;
+  x: number;
+  y: number;
+}
+
+/** Shared config: identical across tracks so world/scale stay stable. */
 export const driftRacerTrackConfig = {
-  worldWidth: 3_200,
-  worldHeight: 2_200,
+  worldWidth: 3_600,
+  worldHeight: 2_500,
   trackWidth: 300,
   lapsToWin: 3,
-  maxRaceMs: 150_000,
+  maxRaceMs: 210_000,
   carRadius: 30,
   wallHeight: 28
 } as const;
 
-// Hand-authored clockwise circuit. Start/finish sits on the long bottom
-// straight; the loop has fast sweepers, a top chicane and two jump straights.
-const WAYPOINTS: [number, number][] = [
-  [1100, 1805],
-  [1500, 1830],
-  [2300, 1770],
-  [2800, 1470],
-  [2950, 1060],
-  [2790, 650],
-  [2250, 470],
-  [1780, 560],
-  [1500, 470],
-  [980, 560],
-  [560, 820],
-  [380, 1250],
-  [560, 1620],
-  [760, 1755]
+const SAMPLE_STEP = 28;
+
+interface RampSpec {
+  /** Lap fraction where the ramp lip sits. */
+  at: number;
+  length: number;
+  peak: number;
+}
+
+interface TrackSpec {
+  id: string;
+  name: string;
+  /** Either hand-authored waypoints or a star-shaped radial curve. */
+  waypoints?: [number, number][];
+  radial?: {
+    rx: number;
+    ry: number;
+    wave: { amp: number; freq: number; phase: number }[];
+  };
+  ramps: RampSpec[];
+  pickupRows: number[];
+}
+
+const TRACK_SPECS: TrackSpec[] = [
+  {
+    id: "palm-bay",
+    name: "Palm Bay",
+    waypoints: [
+      [1300, 2055],
+      [1700, 2080],
+      [2500, 2020],
+      [3000, 1720],
+      [3150, 1310],
+      [2990, 900],
+      [2450, 720],
+      [1980, 810],
+      [1700, 720],
+      [1180, 810],
+      [760, 1070],
+      [580, 1500],
+      [760, 1870],
+      [960, 2005]
+    ],
+    ramps: [
+      { at: 0.115, length: 240, peak: 95 },
+      { at: 0.66, length: 200, peak: 60 }
+    ],
+    pickupRows: [0.27, 0.52, 0.82]
+  },
+  {
+    id: "lagoon-loop",
+    name: "Lagoon Loop",
+    radial: {
+      rx: 1330,
+      ry: 950,
+      wave: [
+        { amp: 0.14, freq: 3, phase: 0.4 },
+        { amp: 0.08, freq: 5, phase: 1.1 },
+        { amp: 0.04, freq: 7, phase: 2.2 }
+      ]
+    },
+    ramps: [
+      { at: 0.09, length: 250, peak: 100 },
+      { at: 0.42, length: 220, peak: 75 },
+      { at: 0.74, length: 220, peak: 85 }
+    ],
+    pickupRows: [0.18, 0.38, 0.58, 0.86]
+  },
+  {
+    id: "volcano-ridge",
+    name: "Volcano Ridge",
+    radial: {
+      rx: 1255,
+      ry: 955,
+      wave: [
+        { amp: 0.17, freq: 2, phase: 0.6 },
+        { amp: 0.1, freq: 5, phase: 2.0 },
+        { amp: 0.06, freq: 8, phase: 0.2 },
+        { amp: 0.03, freq: 11, phase: 1.4 }
+      ]
+    },
+    ramps: [
+      { at: 0.13, length: 260, peak: 110 },
+      { at: 0.37, length: 210, peak: 70 },
+      { at: 0.63, length: 240, peak: 95 },
+      { at: 0.88, length: 200, peak: 65 }
+    ],
+    pickupRows: [0.12, 0.3, 0.5, 0.7, 0.9]
+  }
 ];
 
-const SAMPLE_STEP = 28;
+export interface DriftRacerTrackRuntime {
+  id: string;
+  name: string;
+  points: DriftRacerTrackPoint[];
+  segments: TrackSegment[];
+  length: number;
+  ramps: DriftRacerRamp[];
+  pickups: DriftRacerPickupAnchor[];
+}
 
 function catmullRom(
   p0: [number, number],
@@ -88,19 +172,38 @@ function catmullRom(
   ];
 }
 
-function buildCenterline(): { x: number; y: number }[] {
-  const count = WAYPOINTS.length;
-  const dense: [number, number][] = [];
-  for (let i = 0; i < count; i += 1) {
-    const p0 = WAYPOINTS[(i - 1 + count) % count];
-    const p1 = WAYPOINTS[i];
-    const p2 = WAYPOINTS[(i + 1) % count];
-    const p3 = WAYPOINTS[(i + 2) % count];
-    for (let s = 0; s < 40; s += 1) {
-      dense.push(catmullRom(p0, p1, p2, p3, s / 40));
+function densePoints(spec: TrackSpec): [number, number][] {
+  const cx = driftRacerTrackConfig.worldWidth / 2;
+  const cy = driftRacerTrackConfig.worldHeight / 2;
+
+  if (spec.radial) {
+    // Star-shaped radial curve: r(theta) > 0 guarantees no self-intersection.
+    const out: [number, number][] = [];
+    const steps = 720;
+    for (let i = 0; i < steps; i += 1) {
+      const a = (i / steps) * Math.PI * 2;
+      let r = 1;
+      for (const w of spec.radial.wave) r += w.amp * Math.sin(w.freq * a + w.phase);
+      out.push([cx + spec.radial.rx * r * Math.cos(a), cy + spec.radial.ry * r * Math.sin(a)]);
     }
+    return out;
   }
 
+  const wp = spec.waypoints ?? [];
+  const count = wp.length;
+  const out: [number, number][] = [];
+  for (let i = 0; i < count; i += 1) {
+    const p0 = wp[(i - 1 + count) % count];
+    const p1 = wp[i];
+    const p2 = wp[(i + 1) % count];
+    const p3 = wp[(i + 2) % count];
+    for (let s = 0; s < 40; s += 1) out.push(catmullRom(p0, p1, p2, p3, s / 40));
+  }
+  return out;
+}
+
+function buildTrack(spec: TrackSpec): DriftRacerTrackRuntime {
+  const dense = densePoints(spec);
   const hyp = (a: [number, number], b: [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   const cumulative = [0];
   let total = 0;
@@ -110,51 +213,37 @@ function buildCenterline(): { x: number; y: number }[] {
   }
   total += hyp(dense[dense.length - 1], dense[0]);
 
-  const sampleCount = Math.round(total / SAMPLE_STEP);
+  const sampleCount = Math.max(64, Math.round(total / SAMPLE_STEP));
   const step = total / sampleCount;
-  const points: { x: number; y: number }[] = [];
-  let denseIndex = 0;
+  const raw: { x: number; y: number }[] = [];
+  let di = 0;
   for (let k = 0; k < sampleCount; k += 1) {
     const target = k * step;
-    while (denseIndex < cumulative.length - 1 && cumulative[denseIndex + 1] < target) {
-      denseIndex += 1;
-    }
-    const segLength = (cumulative[denseIndex + 1] ?? total) - cumulative[denseIndex];
-    const f = segLength > 0 ? (target - cumulative[denseIndex]) / segLength : 0;
-    const a = dense[denseIndex];
-    const b = dense[(denseIndex + 1) % dense.length];
-    points.push({ x: a[0] + (b[0] - a[0]) * f, y: a[1] + (b[1] - a[1]) * f });
+    while (di < cumulative.length - 1 && cumulative[di + 1] < target) di += 1;
+    const segLength = (cumulative[di + 1] ?? total) - cumulative[di];
+    const f = segLength > 0 ? (target - cumulative[di]) / segLength : 0;
+    const a = dense[di];
+    const b = dense[(di + 1) % dense.length];
+    raw.push({ x: a[0] + (b[0] - a[0]) * f, y: a[1] + (b[1] - a[1]) * f });
   }
-  return points;
-}
 
-function createTrack(): {
-  points: DriftRacerTrackPoint[];
-  segments: TrackSegment[];
-  length: number;
-} {
-  const rawPoints = buildCenterline();
-  const lengths = rawPoints.map((point, index) => {
-    const next = rawPoints[(index + 1) % rawPoints.length];
+  const lengths = raw.map((point, index) => {
+    const next = raw[(index + 1) % raw.length];
     return Math.hypot(next.x - point.x, next.y - point.y);
   });
-  let accumulatedDistance = 0;
-  const points = rawPoints.map((point, index) => {
-    const trackPoint = {
-      ...point,
-      distance: accumulatedDistance
-    };
-    accumulatedDistance += lengths[index];
-    return trackPoint;
+  let acc = 0;
+  const points = raw.map((point, index) => {
+    const tp = { ...point, distance: acc };
+    acc += lengths[index];
+    return tp;
   });
-  const length = accumulatedDistance;
+  const length = acc;
   const segments = points.map((point, index) => {
     const nextIndex = (index + 1) % points.length;
     const next = points[nextIndex];
     const segmentLength = lengths[index] || 1;
     const tangentX = (next.x - point.x) / segmentLength;
     const tangentY = (next.y - point.y) / segmentLength;
-
     return {
       startIndex: index,
       endIndex: nextIndex,
@@ -167,30 +256,97 @@ function createTrack(): {
     };
   });
 
-  return { points, segments, length };
+  const ramps: DriftRacerRamp[] = spec.ramps.map((r) => ({
+    startDistance: ((r.at * length - r.length) % length + length) % length,
+    length: r.length,
+    peak: r.peak
+  }));
+
+  const runtime: DriftRacerTrackRuntime = {
+    id: spec.id,
+    name: spec.name,
+    points,
+    segments,
+    length,
+    ramps,
+    pickups: []
+  };
+
+  const lanes = [-0.26, 0, 0.26];
+  const pickups: DriftRacerPickupAnchor[] = [];
+  spec.pickupRows.forEach((frac, rowIndex) => {
+    const sample = sampleTrackOn(runtime, frac * length);
+    lanes.forEach((lane, laneIndex) => {
+      const offset = lane * driftRacerTrackConfig.trackWidth;
+      pickups.push({
+        id: `pickup-${rowIndex}-${laneIndex}`,
+        x: sample.x + sample.normalX * offset,
+        y: sample.y + sample.normalY * offset
+      });
+    });
+  });
+  runtime.pickups = pickups;
+  return runtime;
 }
 
-export const driftRacerTrack = createTrack();
+function wrapOn(track: DriftRacerTrackRuntime, distance: number): number {
+  const wrapped = distance % track.length;
+  return wrapped >= 0 ? wrapped : wrapped + track.length;
+}
 
-// Jump ramps, positioned by fraction of the lap so they land on (mostly)
-// straight sections. The lip is at startDistance + length.
-export const driftRacerRamps: DriftRacerRamp[] = [
-  { startDistance: 0.115 * driftRacerTrack.length - 240, length: 240, peak: 95 },
-  { startDistance: 0.66 * driftRacerTrack.length - 200, length: 200, peak: 60 }
-].map((ramp) => ({
-  ...ramp,
-  startDistance: (ramp.startDistance + driftRacerTrack.length) % driftRacerTrack.length
-}));
+function sampleTrackOn(track: DriftRacerTrackRuntime, distance: number): DriftRacerTrackSample {
+  const d = wrapOn(track, distance);
+  const segment =
+    track.segments.find((e) => d >= e.startDistance && d <= e.startDistance + e.length) ??
+    track.segments[track.segments.length - 1];
+  const start = track.points[segment.startIndex];
+  const t = Math.max(0, Math.min(1, (d - segment.startDistance) / segment.length));
+  return {
+    x: start.x + segment.tangentX * segment.length * t,
+    y: start.y + segment.tangentY * segment.length * t,
+    distance: d,
+    angleRad: Math.atan2(segment.tangentY, segment.tangentX),
+    normalX: segment.normalX,
+    normalY: segment.normalY
+  };
+}
+
+const TRACKS: DriftRacerTrackRuntime[] = TRACK_SPECS.map(buildTrack);
+let activeIndex = 0;
+
+export const driftRacerTrackIds = TRACKS.map((t) => t.id);
+
+/** Pick a track by id, or rotate to the next one when omitted. */
+export function setActiveDriftRacerTrack(id?: string): DriftRacerTrackRuntime {
+  if (id) {
+    const index = TRACKS.findIndex((t) => t.id === id);
+    if (index >= 0) activeIndex = index;
+  } else {
+    activeIndex = (activeIndex + 1) % TRACKS.length;
+  }
+  return TRACKS[activeIndex];
+}
+
+export function getTrack(): DriftRacerTrackRuntime {
+  return TRACKS[activeIndex];
+}
+
+export function getRamps(): DriftRacerRamp[] {
+  return TRACKS[activeIndex].ramps;
+}
+
+export function getPickups(): DriftRacerPickupAnchor[] {
+  return TRACKS[activeIndex].pickups;
+}
 
 export function wrapTrackDistance(distance: number): number {
-  const wrapped = distance % driftRacerTrack.length;
-  return wrapped >= 0 ? wrapped : wrapped + driftRacerTrack.length;
+  return wrapOn(getTrack(), distance);
 }
 
-/** Ramp surface height (and slope) at a track distance. */
 export function sampleRampHeight(distance: number): { height: number; slope: number } {
-  const d = wrapTrackDistance(distance);
-  for (const ramp of driftRacerRamps) {
+  const track = getTrack();
+  const d = wrapOn(track, distance);
+  for (const ramp of track.ramps) {
     const end = ramp.startDistance + ramp.length;
     if (d >= ramp.startDistance && d <= end) {
       return { height: (ramp.peak * (d - ramp.startDistance)) / ramp.length, slope: ramp.peak / ramp.length };
@@ -200,30 +356,16 @@ export function sampleRampHeight(distance: number): { height: number; slope: num
 }
 
 export function sampleDriftRacerTrack(distance: number): DriftRacerTrackSample {
-  const wrappedDistance = wrapTrackDistance(distance);
-  const segment =
-    driftRacerTrack.segments.find(
-      (entry) => wrappedDistance >= entry.startDistance && wrappedDistance <= entry.startDistance + entry.length
-    ) ?? driftRacerTrack.segments[driftRacerTrack.segments.length - 1];
-  const start = driftRacerTrack.points[segment.startIndex];
-  const t = Math.max(0, Math.min(1, (wrappedDistance - segment.startDistance) / segment.length));
-
-  return {
-    x: start.x + segment.tangentX * segment.length * t,
-    y: start.y + segment.tangentY * segment.length * t,
-    distance: wrappedDistance,
-    angleRad: Math.atan2(segment.tangentY, segment.tangentX),
-    normalX: segment.normalX,
-    normalY: segment.normalY
-  };
+  return sampleTrackOn(getTrack(), distance);
 }
 
 export function projectPointToDriftRacerTrack(x: number, y: number): DriftRacerTrackProjection {
-  let bestProjection: DriftRacerTrackProjection | null = null;
+  const track = getTrack();
+  let best: DriftRacerTrackProjection | null = null;
   let bestDistanceSq = Number.POSITIVE_INFINITY;
 
-  for (const segment of driftRacerTrack.segments) {
-    const start = driftRacerTrack.points[segment.startIndex];
+  for (const segment of track.segments) {
+    const start = track.points[segment.startIndex];
     const dx = x - start.x;
     const dy = y - start.y;
     const t = Math.max(0, Math.min(1, (dx * segment.tangentX + dy * segment.tangentY) / segment.length));
@@ -232,17 +374,13 @@ export function projectPointToDriftRacerTrack(x: number, y: number): DriftRacerT
     const offsetX = x - projectedX;
     const offsetY = y - projectedY;
     const distanceSq = offsetX * offsetX + offsetY * offsetY;
-
-    if (distanceSq >= bestDistanceSq) {
-      continue;
-    }
-
+    if (distanceSq >= bestDistanceSq) continue;
     const signedLateralDistance = offsetX * segment.normalX + offsetY * segment.normalY;
     bestDistanceSq = distanceSq;
-    bestProjection = {
+    best = {
       x: projectedX,
       y: projectedY,
-      distance: wrapTrackDistance(segment.startDistance + segment.length * t),
+      distance: wrapOn(track, segment.startDistance + segment.length * t),
       angleRad: Math.atan2(segment.tangentY, segment.tangentX),
       normalX: segment.normalX,
       normalY: segment.normalY,
@@ -251,35 +389,9 @@ export function projectPointToDriftRacerTrack(x: number, y: number): DriftRacerT
     };
   }
 
-  if (!bestProjection) {
+  if (!best) {
     const fallback = sampleDriftRacerTrack(0);
     return { ...fallback, signedLateralDistance: 0, lateralDistance: 0 };
   }
-
-  return bestProjection;
+  return best;
 }
-
-export interface DriftRacerPickupAnchor {
-  id: string;
-  x: number;
-  y: number;
-}
-
-// Item-box rows spread around the lap (3 boxes across the track each).
-export const driftRacerPickups: DriftRacerPickupAnchor[] = (() => {
-  const rows = [0.27, 0.52, 0.82];
-  const lanes = [-0.26, 0, 0.26];
-  const out: DriftRacerPickupAnchor[] = [];
-  rows.forEach((frac, rowIndex) => {
-    const sample = sampleDriftRacerTrack(frac * driftRacerTrack.length);
-    lanes.forEach((lane, laneIndex) => {
-      const offset = lane * driftRacerTrackConfig.trackWidth;
-      out.push({
-        id: `pickup-${rowIndex}-${laneIndex}`,
-        x: sample.x + sample.normalX * offset,
-        y: sample.y + sample.normalY * offset
-      });
-    });
-  });
-  return out;
-})();

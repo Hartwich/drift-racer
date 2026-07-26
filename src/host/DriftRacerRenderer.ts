@@ -52,7 +52,15 @@ const CAMERA_LABELS: Record<CameraMode, { de: string; en: string }> = {
   topdown: { de: "Vogel", en: "Top-down" }
 };
 
-const WEAPON_ICON: Record<string, string> = { rocket: "🚀", mine: "💣", turbo: "⚡" };
+const WEAPON_ICON: Record<string, string> = {
+  rocket: "🚀",
+  homing: "🎯",
+  mine: "💣",
+  oil: "🛢️",
+  turbo: "⚡",
+  shield: "🛡️",
+  shock: "🌩️"
+};
 
 interface PreviewCarData {
   colormap?: string;
@@ -228,6 +236,7 @@ interface CarView {
   finished: boolean;
   spunOut: boolean;
   prevSpunOut: boolean;
+  shielded: boolean;
   wheelSpin: number;
 }
 
@@ -257,6 +266,8 @@ export class DriftRacerRenderer {
   private itemBoxTexture?: THREE.Texture;
   private rockMaterial?: THREE.MeshStandardMaterial;
   private waterMaterial?: THREE.MeshStandardMaterial;
+  private islandGroup?: THREE.Group;
+  private builtTrackId: string | null = null;
   private readonly natureTemplates = new Map<string, Promise<THREE.Group | null>>();
 
   private state: DriftRacerState | null = null;
@@ -380,11 +391,13 @@ export class DriftRacerRenderer {
     this.state = state;
     if (!state) return;
 
-    if (!this.trackBuilt) {
+    if (!this.trackBuilt || this.builtTrackId !== state.trackId) {
+      this.clearTrackScenery();
       this.offsetX = (state.worldWidth * WORLD_SCALE) / 2;
       this.offsetZ = (state.worldHeight * WORLD_SCALE) / 2;
       this.buildTrack(state);
       this.trackBuilt = true;
+      this.builtTrackId = state.trackId;
     }
 
     this.syncCars(state);
@@ -463,7 +476,9 @@ export class DriftRacerRenderer {
     const carGroup = new THREE.Group();
     const fxGroup = new THREE.Group();
     const skidGroup = new THREE.Group();
-    scene.add(trackGroup, skidGroup, fxGroup, carGroup);
+    const islandGroup = new THREE.Group();
+    scene.add(islandGroup, trackGroup, skidGroup, fxGroup, carGroup);
+    this.islandGroup = islandGroup;
 
     this.scene = scene;
     this.camera = camera;
@@ -898,6 +913,21 @@ export class DriftRacerRenderer {
     });
   }
 
+  private clearTrackScenery(): void {
+    for (const group of [this.trackGroup, this.islandGroup]) {
+      if (!group) continue;
+      for (const child of [...group.children]) {
+        group.remove(child);
+        disposeObject(child);
+      }
+    }
+    for (const [id, mesh] of this.pickupMeshes) {
+      this.fxGroup?.remove(mesh);
+      disposeObject(mesh);
+      this.pickupMeshes.delete(id);
+    }
+  }
+
   private buildIsland(centre: THREE.Vector2[]): void {
     const scene = this.scene;
     if (!scene) return;
@@ -949,15 +979,16 @@ export class DriftRacerRenderer {
     islandShape.closePath();
     beachShape.closePath();
     const islandMat = new THREE.MeshStandardMaterial({ map: makeSandTexture(), roughness: 1, metalness: 0 });
+    const holder = this.islandGroup ?? scene;
     const island = new THREE.Mesh(new THREE.ShapeGeometry(islandShape, 14), islandMat);
     island.rotation.x = -Math.PI / 2;
     island.position.y = 0;
     island.receiveShadow = true;
-    scene.add(island);
+    holder.add(island);
     const beach = new THREE.Mesh(new THREE.ShapeGeometry(beachShape, 14), new THREE.MeshStandardMaterial({ color: "#e8d3a0", roughness: 1 }));
     beach.rotation.x = -Math.PI / 2;
     beach.position.y = -0.18;
-    scene.add(beach);
+    holder.add(beach);
     void this.loadTextureAsset("ground.jpg", true).then((t) => {
       if (!t) return;
       t.wrapS = THREE.RepeatWrapping;
@@ -1270,6 +1301,15 @@ export class DriftRacerRenderer {
     boostFlame.visible = false;
     group.add(boostFlame);
 
+    const shield = new THREE.Mesh(
+      new THREE.SphereGeometry(0.95, 16, 12),
+      new THREE.MeshBasicMaterial({ color: "#67e8f9", transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    shield.position.y = 0.45;
+    shield.visible = false;
+    shield.name = "shield";
+    group.add(shield);
+
     const car: CarView = {
       group,
       tilt,
@@ -1297,6 +1337,7 @@ export class DriftRacerRenderer {
       finished: false,
       spunOut: false,
       prevSpunOut: false,
+      shielded: false,
       wheelSpin: 0
     };
 
@@ -1341,6 +1382,7 @@ export class DriftRacerRenderer {
       car.boost = racer.boostActive;
       car.finished = racer.finished;
       car.spunOut = racer.spunOut;
+      car.shielded = racer.shielded;
       index += 1;
     }
     for (const [playerId, car] of this.cars) {
@@ -1362,12 +1404,8 @@ export class DriftRacerRenderer {
       seen.add(pickup.id);
       let mesh = this.pickupMeshes.get(pickup.id);
       if (!mesh) {
-        mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(0.7, 0.7, 0.7),
-          new THREE.MeshStandardMaterial({ map: this.itemBoxTexture, emissive: "#f59e0b", emissiveIntensity: 0.35, roughness: 0.4 })
-        );
-        mesh.castShadow = true;
-        mesh.position.set(this.sx(pickup.x), 0.55, this.sz(pickup.y));
+        mesh = this.makeItemBox();
+        mesh.position.set(this.sx(pickup.x), 0.6, this.sz(pickup.y));
         group.add(mesh);
         this.pickupMeshes.set(pickup.id, mesh);
       }
@@ -1390,7 +1428,22 @@ export class DriftRacerRenderer {
       seen.add(p.id);
       let entry = this.projectileMeshes.get(p.id);
       if (!entry) {
-        const obj = p.kind === "rocket" ? this.makeRocketMesh() : this.makeMineMesh();
+        const obj =
+          p.kind === "rocket" || p.kind === "homing"
+            ? this.makeRocketMesh()
+            : p.kind === "oil"
+              ? this.makeOilMesh()
+              : this.makeMineMesh();
+        if (p.kind === "homing") {
+          obj.traverse((child) => {
+            const mesh = child as THREE.Mesh;
+            const mat = mesh.material as THREE.MeshStandardMaterial | undefined;
+            if (mat && "emissive" in mat) {
+              mat.color?.set("#fca5a5");
+              mat.emissive?.set("#ef4444");
+            }
+          });
+        }
         obj.position.set(this.sx(p.x), p.z * WORLD_SCALE + 0.1, this.sz(p.y));
         group.add(obj);
         entry = { obj, tx: this.sx(p.x), ty: p.z * WORLD_SCALE + 0.1, tz: this.sz(p.y) };
@@ -1408,6 +1461,65 @@ export class DriftRacerRenderer {
         this.projectileMeshes.delete(id);
       }
     }
+  }
+
+  /** Glowing item crate: translucent cage, spinning core, halo ring. */
+  private makeItemBox(): THREE.Object3D {
+    const group = new THREE.Group();
+    const cage = new THREE.Mesh(
+      new THREE.BoxGeometry(0.78, 0.78, 0.78),
+      new THREE.MeshPhysicalMaterial({
+        map: this.itemBoxTexture,
+        transparent: true,
+        opacity: 0.55,
+        roughness: 0.1,
+        metalness: 0.1,
+        transmission: 0.45,
+        emissive: "#f59e0b",
+        emissiveIntensity: 0.5
+      })
+    );
+    cage.castShadow = true;
+    cage.name = "cage";
+    group.add(cage);
+
+    const core = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.26, 0),
+      new THREE.MeshBasicMaterial({ color: "#fff7c2" })
+    );
+    core.name = "core";
+    group.add(core);
+
+    const halo = new THREE.Mesh(
+      new THREE.TorusGeometry(0.62, 0.05, 8, 28),
+      new THREE.MeshBasicMaterial({ color: "#fde047", transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    halo.rotation.x = -Math.PI / 2;
+    halo.name = "halo";
+    group.add(halo);
+
+    const glow = new THREE.PointLight("#fbbf24", 1.6, 4);
+    group.add(glow);
+    return group;
+  }
+
+  private makeOilMesh(): THREE.Object3D {
+    const group = new THREE.Group();
+    const slick = new THREE.Mesh(
+      new THREE.CircleGeometry(0.85, 20),
+      new THREE.MeshStandardMaterial({ color: "#0b0f14", roughness: 0.05, metalness: 0.9, transparent: true, opacity: 0.85 })
+    );
+    slick.rotation.x = -Math.PI / 2;
+    slick.position.y = 0.02;
+    group.add(slick);
+    const sheen = new THREE.Mesh(
+      new THREE.CircleGeometry(0.5, 16),
+      new THREE.MeshBasicMaterial({ color: "#6d28d9", transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    sheen.rotation.x = -Math.PI / 2;
+    sheen.position.y = 0.03;
+    group.add(sheen);
+    return group;
   }
 
   private makeRocketMesh(): THREE.Object3D {
@@ -1505,6 +1617,15 @@ export class DriftRacerRenderer {
       car.boostFlame.visible = car.boost;
       if (car.boost) car.boostFlame.scale.set(0.8 + Math.sin(now * 0.05) * 0.25, 1, 1);
 
+      const shieldMesh = car.group.getObjectByName("shield") as THREE.Mesh | null;
+      if (shieldMesh) {
+        shieldMesh.visible = car.shielded;
+        if (car.shielded) {
+          const pulse = 1 + Math.sin(now * 0.006) * 0.06;
+          shieldMesh.scale.setScalar(pulse);
+          (shieldMesh.material as THREE.MeshBasicMaterial).opacity = 0.18 + 0.08 * Math.sin(now * 0.008);
+        }
+      }
       if (car.spunOut && !car.prevSpunOut) this.spawnExplosion(car.x, car.height, car.z);
       car.prevSpunOut = car.spunOut;
 
@@ -1520,8 +1641,20 @@ export class DriftRacerRenderer {
     // animate pickups
     for (const mesh of this.pickupMeshes.values()) {
       if (!mesh.visible) continue;
-      mesh.rotation.y += dt * 1.6;
-      mesh.position.y = 0.55 + Math.sin(now * 0.004 + mesh.position.x) * 0.12;
+      mesh.rotation.y += dt * 1.1;
+      mesh.position.y = 0.6 + Math.sin(now * 0.004 + mesh.position.x) * 0.13;
+      const core = mesh.getObjectByName("core");
+      if (core) {
+        core.rotation.y -= dt * 3.2;
+        core.rotation.x += dt * 1.4;
+        const s = 1 + Math.sin(now * 0.007 + mesh.position.z) * 0.16;
+        core.scale.setScalar(s);
+      }
+      const halo = mesh.getObjectByName("halo");
+      if (halo) {
+        halo.rotation.z += dt * 2.2;
+        (halo as THREE.Mesh).scale.setScalar(1 + Math.sin(now * 0.005) * 0.09);
+      }
     }
     // smooth projectiles + blink mines
     for (const entry of this.projectileMeshes.values()) {
@@ -1775,6 +1908,20 @@ export class DriftRacerRenderer {
       const name = document.createElement("span");
       name.textContent = racer.name;
       Object.assign(name.style, { flex: "1", whiteSpace: "nowrap" } satisfies Partial<CSSStyleDeclaration>);
+      if (racer.isBot) {
+        const tag = document.createElement("span");
+        tag.textContent = "KI";
+        Object.assign(tag.style, {
+          fontSize: "10px",
+          fontWeight: "800",
+          letterSpacing: "0.5px",
+          opacity: "0.75",
+          border: "1px solid rgba(248,250,252,0.4)",
+          borderRadius: "5px",
+          padding: "0 4px"
+        } satisfies Partial<CSSStyleDeclaration>);
+        name.appendChild(tag);
+      }
       const weapon = document.createElement("span");
       weapon.textContent = racer.weapon ? WEAPON_ICON[racer.weapon] ?? "" : "";
       weapon.style.width = "18px";
@@ -1805,7 +1952,12 @@ export class DriftRacerRenderer {
     speedLine.style.fontSize = "15px";
     speedLine.style.opacity = "0.8";
     speedLine.textContent = (en ? "Lead speed" : "Tempo") + " " + speed;
-    info.append(lapLine, timeLine, speedLine);
+    const trackLine = document.createElement("div");
+    trackLine.style.fontSize = "13px";
+    trackLine.style.opacity = "0.7";
+    trackLine.style.marginTop = "2px";
+    trackLine.textContent = state.trackName;
+    info.append(lapLine, timeLine, speedLine, trackLine);
 
     if (state.winnerName) {
       banner.style.display = "block";

@@ -16,6 +16,9 @@ export interface DriftRacerRuntimeRacerState extends DriftRacerRacerState {
   stunnedMs: number;
   weaponCooldownMs: number;
   turboMs: number;
+  /** AI steering memory (bots only). */
+  botAimAhead: number;
+  botSkill: number;
 }
 
 export interface DriftRacerRuntimeProjectile extends DriftRacerProjectileState {
@@ -23,6 +26,7 @@ export interface DriftRacerRuntimeProjectile extends DriftRacerProjectileState {
   vy: number;
   ttlMs: number;
   armDelayMs: number;
+  targetId: string | null;
 }
 
 export interface DriftRacerRuntimePickup extends DriftRacerPickupState {
