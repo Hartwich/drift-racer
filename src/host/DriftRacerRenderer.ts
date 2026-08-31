@@ -6,6 +6,7 @@ import type {
   DriftRacerRacerState,
   DriftRacerState
 } from "../protocol.js";
+import { tokens } from "./platformTheme.js";
 
 /**
  * Full 3D renderer for Drift Racer (beach / desert theme).
@@ -325,7 +326,7 @@ export class DriftRacerRenderer {
       inset: "0",
       pointerEvents: "none",
       fontFamily: '"Nunito Sans", Inter, system-ui, sans-serif',
-      color: "#f8fafc"
+      color: tokens().color.text
     } satisfies Partial<CSSStyleDeclaration>);
     root.appendChild(hud);
     parent.appendChild(root);

@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import { driftRacerManifest } from "../manifest.js";
 import type { DriftRacerState } from "../protocol.js";
 import { DriftRacerRenderer } from "./DriftRacerRenderer.js";
+import { renderRoundScreens } from "./roundScreens.js";
 
 interface HostClientLike {
   subscribe(callback: (state: HostAppStateLike) => void): () => void;
@@ -43,6 +44,11 @@ export class DriftRacerHostScene extends Phaser.Scene {
     this.driftRenderer = driftRenderer;
 
     this.unsubscribe = client.subscribe((state) => {
+      // Intro and result screens belong to this game, not the platform.
+      if (renderRoundScreens(this, state)) {
+        return;
+      }
+
       const gameState = (state.game?.state ?? null) as DriftRacerState | null;
       driftRenderer.setState(gameState, state.room?.language === "en");
     });
