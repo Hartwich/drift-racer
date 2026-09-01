@@ -87,7 +87,7 @@ export const driftRacerManifest = {
   },
 
   ownsScreens: ["round_intro", "result"],
-  visual: { accent: "#a2683c", eyebrow: "Racing" },
+  visual: { accent: "#a2683c", icon: "car", eyebrow: "Racing" },
   audio: { track: { profile: "chase", bpm: 138, rootMidi: 52, masterGain: 0.15 } },
   controllerChrome: { wide: true },
 } as const satisfies GameManifest;
