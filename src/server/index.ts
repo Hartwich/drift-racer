@@ -976,8 +976,8 @@ export const serverGame: ServerGame<DriftRacerRuntimeState, DriftRacerInput, Dri
     const done = humans.length > 0 ? humans.every((r) => r.finished) : state.racers.every((r) => r.finished);
     return state.phase === "locked" || state.isTimedOut || (state.racers.length > 0 && done);
   },
-  buildScore(state) {
-    return buildScore(state);
+  buildScore(state, context) {
+    return buildScore(state).map(entry => ({ ...entry, reason: context.language === "en" ? (entry.reason === "Drift Racer Sieg" ? "Drift Racer win" : "Drift Racer placement") : entry.reason }));
   },
   toPublicState(state) {
     return buildPublicState(state);

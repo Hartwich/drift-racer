@@ -1883,7 +1883,7 @@ export class DriftRacerRenderer {
     if (!this.hud) return;
     const { hint } = this.ensureHudStructure();
     const label = CAMERA_LABELS[this.cameraMode][this.en ? "en" : "de"];
-    hint.textContent = (this.en ? "Camera (C): " : "Kamera (C): ") + label + (this.en ? "  ·  Fire = weapon" : "  ·  Fire = Waffe");
+    hint.textContent = (this.en ? "Camera (C): " : "Kamera (C): ") + label + (this.en ? "  ·  Fire = weapon" : "  ·  Feuer = Waffe");
   }
 
   private updateHud(state: DriftRacerState): void {
@@ -1911,7 +1911,7 @@ export class DriftRacerRenderer {
       Object.assign(name.style, { flex: "1", whiteSpace: "nowrap" } satisfies Partial<CSSStyleDeclaration>);
       if (racer.isBot) {
         const tag = document.createElement("span");
-        tag.textContent = "KI";
+        tag.textContent = en ? "AI" : "KI";
         Object.assign(tag.style, {
           fontSize: "10px",
           fontWeight: "800",

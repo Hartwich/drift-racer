@@ -1,3 +1,4 @@
+import { driftRacerText } from "./catalogText.js";
 import type { GameManifest } from "@open-party-lab/game-core";
 
 /** Room-setting keys written by the lobby setup screen. */
@@ -9,6 +10,7 @@ export const driftRacerRoomSettingKeys = {
 
 export const driftRacerManifest = {
   id: "drift-racer",
+  translations: driftRacerText,
   displayName: "Drift Racer",
   description: "3D-Arcade-Racer im RC-Mini-Car-Stil mit cineastischer Flugkamera, Waffen und KI-Gegnern.",
   minPlayers: 1,
