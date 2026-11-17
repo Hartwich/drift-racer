@@ -946,6 +946,9 @@ export const serverGame: ServerGame<DriftRacerRuntimeState, DriftRacerInput, Dri
       }
     );
   },
+  onPause(state) {
+    return { ...state, racers: state.racers.map((racer) => racer.isBot ? racer : { ...racer, controls: neutralControls }) };
+  },
   handleInput(state, input, context) {
     if (input.type !== "drive" || state.phase !== "playing") return state;
     const racerIndex = state.racers.findIndex((racer) => racer.playerId === input.playerId);
