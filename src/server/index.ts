@@ -742,12 +742,19 @@ function updateWeapons(
 }
 
 function buildRaceMessage(state: DriftRacerRuntimeState, language: ServerGameContext["language"]): string {
+  const words = {
+    de: { over: "Rennen beendet.", timed: "führt beim Zeitlimit.", finish: "erreicht das Ziel." },
+    en: { over: "Race finished.", timed: "leads at the time limit.", finish: "reaches the finish." },
+    es: { over: "Carrera terminada.", timed: "va en cabeza cuando se acaba el tiempo.", finish: "llega a la meta." },
+    fr: { over: "Course terminée.", timed: "est en tête à la fin du temps imparti.", finish: "franchit la ligne d’arrivée." },
+    "pt-BR": { over: "Corrida encerrada.", timed: "está na liderança quando o tempo acaba.", finish: "chega à linha de chegada." }
+  }[language];
   const leader = sortRacersForRank(state.racers)[0];
-  if (!leader) return language === "en" ? "Race finished." : "Rennen beendet.";
+  if (!leader) return words.over;
   if (state.isTimedOut) {
-    return language === "en" ? `${leader.name} leads at the time limit.` : `${leader.name} fuehrt beim Zeitlimit.`;
+    return `${leader.name} ${words.timed}`;
   }
-  return language === "en" ? `${leader.name} reaches the finish.` : `${leader.name} erreicht das Ziel.`;
+  return `${leader.name} ${words.finish}`;
 }
 
 function tickRace(
@@ -896,7 +903,7 @@ export const serverGame: ServerGame<DriftRacerRuntimeState, DriftRacerInput, Dri
     return {
       ...createBaseRoundState("round_intro", context.now, {
         durationMs: phaseTimings.roundIntroMs,
-        message: context.language === "en" ? "Engines warming up." : "Motoren laufen warm."
+        message: ({ de: "Motoren laufen warm.", en: "Engines warming up.", es: "Calentando motores.", fr: "Les moteurs chauffent.", "pt-BR": "Aquecendo os motores." })[context.language]
       }),
       ...trackState,
       worldWidth: driftRacerTrackConfig.worldWidth,
@@ -942,7 +949,7 @@ export const serverGame: ServerGame<DriftRacerRuntimeState, DriftRacerInput, Dri
       context.now,
       {
         startedAt: context.now,
-        message: context.language === "en" ? "Race is live." : "Das Rennen laeuft."
+        message: ({ de: "Das Rennen läuft.", en: "Race is live.", es: "¡La carrera ha comenzado!", fr: "La course est lancée !", "pt-BR": "A corrida começou!" })[context.language]
       }
     );
   },
@@ -980,7 +987,8 @@ export const serverGame: ServerGame<DriftRacerRuntimeState, DriftRacerInput, Dri
     return state.phase === "locked" || state.isTimedOut || (state.racers.length > 0 && done);
   },
   buildScore(state, context) {
-    return buildScore(state).map(entry => ({ ...entry, reason: context.language === "en" ? (entry.reason === "Drift Racer Sieg" ? "Drift Racer win" : "Drift Racer placement") : entry.reason }));
+    const reason = ({ de: ["Drift Racer Sieg", "Drift Racer Platzierung"], en: ["Drift Racer win", "Drift Racer placement"], es: ["Victoria en Drift Racer", "Posición en Drift Racer"], fr: ["Victoire à Drift Racer", "Classement Drift Racer"], "pt-BR": ["Vitória no Drift Racer", "Colocação no Drift Racer"] })[context.language];
+    return buildScore(state).map(entry => ({ ...entry, reason: entry.reason === "Drift Racer Sieg" ? reason[0] : reason[1] }));
   },
   toPublicState(state) {
     return buildPublicState(state);

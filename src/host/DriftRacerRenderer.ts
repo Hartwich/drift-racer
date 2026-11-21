@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { SupportedLanguage } from "@open-party-lab/game-core";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type {
   DriftRacerPickupState,
@@ -45,12 +46,12 @@ const NATURE_BASE = "/drift-racer/nature";
 const CAMERA_MODES = ["dynamic", "cinematic", "chase", "overview", "topdown"] as const;
 type CameraMode = (typeof CAMERA_MODES)[number];
 
-const CAMERA_LABELS: Record<CameraMode, { de: string; en: string }> = {
-  dynamic: { de: "Dynamisch (alle)", en: "Dynamic (all)" },
-  cinematic: { de: "Cinematic", en: "Cinematic" },
-  chase: { de: "Verfolgung", en: "Chase" },
-  overview: { de: "Übersicht", en: "Overview" },
-  topdown: { de: "Vogel", en: "Top-down" }
+const CAMERA_LABELS: Record<CameraMode, Record<SupportedLanguage, string>> = {
+  dynamic: { de: "Dynamisch (alle)", en: "Dynamic (all)", es: "Dinámica (todos)", fr: "Dynamique (tous)", "pt-BR": "Dinâmica (todos)" },
+  cinematic: { de: "Filmisch", en: "Cinematic", es: "Cinemática", fr: "Cinématique", "pt-BR": "Cinematográfica" },
+  chase: { de: "Verfolgung", en: "Chase", es: "Persecución", fr: "Poursuite", "pt-BR": "Perseguição" },
+  overview: { de: "Übersicht", en: "Overview", es: "Vista general", fr: "Vue d’ensemble", "pt-BR": "Visão geral" },
+  topdown: { de: "Vogelperspektive", en: "Top-down", es: "Vista cenital", fr: "Vue du dessus", "pt-BR": "Visão superior" }
 };
 
 const WEAPON_ICON: Record<string, string> = {
@@ -272,7 +273,7 @@ export class DriftRacerRenderer {
   private readonly natureTemplates = new Map<string, Promise<THREE.Group | null>>();
 
   private state: DriftRacerState | null = null;
-  private en = false;
+  private language: SupportedLanguage = "de";
   private trackBuilt = false;
   private offsetX = 0;
   private offsetZ = 0;
@@ -387,8 +388,8 @@ export class DriftRacerRenderer {
 
   // ---- public state feed ----------------------------------------------
 
-  setState(state: DriftRacerState | null, en: boolean): void {
-    this.en = en;
+  setState(state: DriftRacerState | null, language: SupportedLanguage): void {
+    this.language = language;
     this.state = state;
     if (!state) return;
 
@@ -1882,19 +1883,26 @@ export class DriftRacerRenderer {
   private updateCameraLabel(): void {
     if (!this.hud) return;
     const { hint } = this.ensureHudStructure();
-    const label = CAMERA_LABELS[this.cameraMode][this.en ? "en" : "de"];
-    hint.textContent = (this.en ? "Camera (C): " : "Kamera (C): ") + label + (this.en ? "  ·  Fire = weapon" : "  ·  Feuer = Waffe");
+    const hintCopy = ({ de: ["Kamera (C): ", " ·  Feuer = Waffe"], en: ["Camera (C): ", " ·  Fire = weapon"], es: ["Cámara (C): ", " ·  Disparo = arma"], fr: ["Caméra (C) : ", " ·  Tir = arme"], "pt-BR": ["Câmera (C): ", " ·  Atirar = arma"] })[this.language];
+    const label = CAMERA_LABELS[this.cameraMode][this.language];
+    hint.textContent = hintCopy[0] + label + hintCopy[1];
   }
 
   private updateHud(state: DriftRacerState): void {
     if (!this.hud) return;
     const { board, info, banner } = this.ensureHudStructure();
-    const en = this.en;
+    const words = {
+      de: { standings: "Platzierung", ai: "KI", lap: "Runde", time: "Zeit", speed: "Tempo", leads: "führt!", wins: "gewinnt!" },
+      en: { standings: "Standings", ai: "AI", lap: "Lap", time: "Time", speed: "Lead speed", leads: "leads!", wins: "wins!" },
+      es: { standings: "Clasificación", ai: "IA", lap: "Vuelta", time: "Tiempo", speed: "Velocidad líder", leads: "va en cabeza", wins: "¡gana!" },
+      fr: { standings: "Classement", ai: "IA", lap: "Tour", time: "Temps", speed: "Vitesse de tête", leads: "est en tête", wins: "gagne !" },
+      "pt-BR": { standings: "Classificação", ai: "IA", lap: "Volta", time: "Tempo", speed: "Velocidade líder", leads: "está na liderança", wins: "venceu!" }
+    }[this.language];
     const ranked = [...state.racers].sort((a, b) => a.rank - b.rank);
 
     board.innerHTML = "";
     const title = document.createElement("div");
-    title.textContent = en ? "Standings" : "Platzierung";
+    title.textContent = words.standings;
     Object.assign(title.style, { fontSize: "12px", letterSpacing: "1px", textTransform: "uppercase", opacity: "0.65", marginBottom: "8px" } satisfies Partial<CSSStyleDeclaration>);
     board.appendChild(title);
 
@@ -1911,7 +1919,7 @@ export class DriftRacerRenderer {
       Object.assign(name.style, { flex: "1", whiteSpace: "nowrap" } satisfies Partial<CSSStyleDeclaration>);
       if (racer.isBot) {
         const tag = document.createElement("span");
-        tag.textContent = en ? "AI" : "KI";
+        tag.textContent = words.ai;
         Object.assign(tag.style, {
           fontSize: "10px",
           fontWeight: "800",
@@ -1944,15 +1952,15 @@ export class DriftRacerRenderer {
     lapLine.style.fontSize = "26px";
     lapLine.style.fontWeight = "900";
     const leadLap = leader ? Math.min(state.lapsToWin, leader.finished ? state.lapsToWin : leader.lap + 1) : 1;
-    lapLine.textContent = (en ? "Lap" : "Runde") + " " + leadLap + "/" + state.lapsToWin;
+    lapLine.textContent = words.lap + " " + leadLap + "/" + state.lapsToWin;
     const timeLine = document.createElement("div");
     timeLine.style.fontSize = "15px";
     timeLine.style.opacity = "0.8";
-    timeLine.textContent = (en ? "Time" : "Zeit") + " " + mm + ":" + ss;
+    timeLine.textContent = words.time + " " + mm + ":" + ss;
     const speedLine = document.createElement("div");
     speedLine.style.fontSize = "15px";
     speedLine.style.opacity = "0.8";
-    speedLine.textContent = (en ? "Lead speed" : "Tempo") + " " + speed;
+    speedLine.textContent = words.speed + " " + speed;
     const trackLine = document.createElement("div");
     trackLine.style.fontSize = "13px";
     trackLine.style.opacity = "0.7";
@@ -1963,7 +1971,7 @@ export class DriftRacerRenderer {
     if (state.winnerName) {
       banner.style.display = "block";
       banner.style.color = "#fde047";
-      banner.textContent = state.isTimedOut ? state.winnerName + " " + (en ? "leads!" : "führt!") : state.winnerName + " " + (en ? "wins!" : "gewinnt!");
+      banner.textContent = state.isTimedOut ? state.winnerName + " " + words.leads : state.winnerName + " " + words.wins;
     } else {
       banner.style.display = "none";
     }

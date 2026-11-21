@@ -1,11 +1,10 @@
 import { driftRacerManifest } from "../manifest.js";
+import type { SupportedLanguage } from "@open-party-lab/game-core";
 import type { DriftRacerState } from "../protocol.js";
 import {
   createDriftRacerDriveInput,
   type DriftRacerControllerControls
 } from "./driftRacerBindings.js";
-
-type SupportedLanguage = "de" | "en";
 
 interface RacingControlsLayoutModel {
   kind: "racing_controls";

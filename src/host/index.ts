@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import type { SupportedLanguage } from "@open-party-lab/game-core";
 import { driftRacerManifest } from "../manifest.js";
 import type { DriftRacerState } from "../protocol.js";
 import { DriftRacerRenderer } from "./DriftRacerRenderer.js";
@@ -13,7 +14,7 @@ interface HostAppStateLike {
     state?: unknown;
   } | null;
   room?: {
-    language?: "de" | "en";
+    language?: SupportedLanguage;
   } | null;
 }
 
@@ -50,7 +51,7 @@ export class DriftRacerHostScene extends Phaser.Scene {
       }
 
       const gameState = (state.game?.state ?? null) as DriftRacerState | null;
-      driftRenderer.setState(gameState, state.room?.language === "en");
+      driftRenderer.setState(gameState, state.room?.language ?? "de");
     });
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {

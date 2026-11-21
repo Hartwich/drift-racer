@@ -84,5 +84,47 @@ export const driftRacerText = {
     "visual": {
       "eyebrow": "Racing"
     }
+  },
+  "es": {
+    "displayName": "Drift Racer",
+    "description": "Carreras arcade con pantalla dividida en tercera persona, derrapes cerrados y duelos de impulso.",
+    "lobbySetup": { "title": "Configuración de Drift Racer", "description": "Elijan el circuito, las vueltas y cuántos rivales de IA habrá.", "fields": {
+      "track": { "label": "Circuito", "options": {
+        "rotate": { "label": "Rotar circuitos", "description": "Cada carrera usa automáticamente el siguiente circuito." },
+        "palm-bay": { "label": "Palm Bay", "description": "Circuito insular compacto con dos rampas." },
+        "lagoon-loop": { "label": "Lagoon Loop", "description": "Curvas largas y fluidas con tres rampas." },
+        "volcano-ridge": { "label": "Volcano Ridge", "description": "El circuito más largo, con cuatro rampas y cambios cerrados." }
+      } },
+      "laps": { "label": "Vueltas", "description": "Número de vueltas hasta la meta." },
+      "bots": { "label": "Rivales de IA", "description": "Pilotos controlados por el juego que se suman a la carrera." }
+    } }, "visual": { "eyebrow": "Carreras" }
+  },
+  "fr": {
+    "displayName": "Drift Racer",
+    "description": "Courses arcade avec écran partagé à la troisième personne, dérapages serrés et duels de turbo.",
+    "lobbySetup": { "title": "Configuration de Drift Racer", "description": "Choisissez le circuit, le nombre de tours et de rivaux IA.", "fields": {
+      "track": { "label": "Circuit", "options": {
+        "rotate": { "label": "Rotation des circuits", "description": "Chaque course utilise automatiquement le circuit suivant." },
+        "palm-bay": { "label": "Palm Bay", "description": "Circuit insulaire compact avec deux tremplins." },
+        "lagoon-loop": { "label": "Lagoon Loop", "description": "De longues courbes fluides et trois tremplins." },
+        "volcano-ridge": { "label": "Volcano Ridge", "description": "Le circuit le plus long, avec quatre tremplins et des virages serrés." }
+      } },
+      "laps": { "label": "Tours", "description": "Nombre de tours avant l’arrivée." },
+      "bots": { "label": "Rivaux IA", "description": "Pilotes contrôlés par le jeu ajoutés à la course." }
+    } }, "visual": { "eyebrow": "Course" }
+  },
+  "pt-BR": {
+    "displayName": "Drift Racer",
+    "description": "Corridas arcade com tela dividida em terceira pessoa, derrapagens fechadas e duelos de impulso.",
+    "lobbySetup": { "title": "Configuração do Drift Racer", "description": "Escolham a pista, o número de voltas e de rivais de IA.", "fields": {
+      "track": { "label": "Pista", "options": {
+        "rotate": { "label": "Alternar pistas", "description": "Cada corrida usa automaticamente a próxima pista." },
+        "palm-bay": { "label": "Palm Bay", "description": "Circuito compacto em uma ilha com duas rampas." },
+        "lagoon-loop": { "label": "Lagoon Loop", "description": "Curvas longas e fluidas com três rampas." },
+        "volcano-ridge": { "label": "Volcano Ridge", "description": "A pista mais longa, com quatro rampas e mudanças fechadas." }
+      } },
+      "laps": { "label": "Voltas", "description": "Quantas voltas até a chegada." },
+      "bots": { "label": "Rivais de IA", "description": "Pilotos controlados pelo jogo que entram na corrida." }
+    } }, "visual": { "eyebrow": "Corrida" }
   }
 } as const satisfies LocalizedGameTextMap;

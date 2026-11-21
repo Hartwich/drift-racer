@@ -45,7 +45,7 @@ interface ScoreEntryLike {
 interface RoundScreenState {
   phase: string | null;
   message: string | null;
-  language: "de" | "en";
+  language: "de" | "en" | "es" | "fr" | "pt-BR";
   players: Array<{ id: string; name: string }>;
   entries: ScoreEntryLike[];
 }
@@ -64,7 +64,10 @@ const copy = {
     standings: "STANDINGS",
     noPoints: "No points yet.",
     waiting: "Ready up for the next round."
-  }
+  }  ,
+  es: { getReady: "La partida está por comenzar", roundOver: "Fin de la ronda", standings: "CLASIFICACIÓN", noPoints: "Aún no hay puntos.", waiting: "Prepárate para la siguiente ronda." },
+  fr: { getReady: "La partie commence bientôt", roundOver: "Manche terminée", standings: "CLASSEMENT", noPoints: "Aucun point pour le moment.", waiting: "Préparez-vous pour la prochaine manche." },
+  "pt-BR": { getReady: "A partida vai começar", roundOver: "Fim da rodada", standings: "CLASSIFICAÇÃO", noPoints: "Ainda não há pontos.", waiting: "Prepare-se para a próxima rodada." }
 };
 
 /** Narrows the loosely typed host state this scene receives. */
@@ -104,7 +107,7 @@ function readState(input: unknown): RoundScreenState {
   return {
     phase,
     message: typeof state.game?.message === "string" ? state.game.message : null,
-    language: state.room?.language === "en" ? "en" : "de",
+    language: (state.room?.language === "de" || state.room?.language === "en" || state.room?.language === "es" || state.room?.language === "fr" || state.room?.language === "pt-BR" ? state.room.language : "de") as "de" | "en" | "es" | "fr" | "pt-BR",
     players,
     entries
   };
